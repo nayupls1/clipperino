@@ -1,0 +1,10 @@
+/target/
+.clipperino-cache/
+project.lock
+project.tmp
+*.mp4
+*.mov
+*.mkv
+*.wav
+*.bin
+*.part

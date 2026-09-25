@@ -1,0 +1,9 @@
+[package]
+name = "clipperino-app"
+edition.workspace = true
+license.workspace = true
+version.workspace = true
+
+[dependencies]
+clipperino-core.workspace = true
+gpui = "=0.2.2"
