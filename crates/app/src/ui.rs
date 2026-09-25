@@ -303,6 +303,7 @@ impl Editor {
 
     fn timeline_panel(&self, cx: &mut Context<Self>) -> gpui::AnyElement {
         let total = self.project.duration_ms().max(1);
+        let playhead = relative(self.preview_at_ms.min(total) as f32 / total as f32);
         let mut video = div().h(px(54.0)).flex().min_w_0();
         let mut audio = div().h(px(54.0)).flex().min_w_0();
         let mut at = 0;
@@ -377,8 +378,37 @@ impl Editor {
                         self.mark_out.map(time_label).unwrap_or_else(|| "—".into())
                     )),
             )
-            .child(div().child("VIDEO").child(video))
-            .child(div().child("AUDIO").child(audio))
+            .child(
+                div()
+                    .flex()
+                    .min_w_0()
+                    .child(
+                        div()
+                            .w(px(58.0))
+                            .flex_none()
+                            .text_sm()
+                            .text_color(color(&self.theme.muted_text))
+                            .child(div().h(px(54.0)).flex().items_center().child("VIDEO"))
+                            .child(div().h(px(54.0)).flex().items_center().child("AUDIO")),
+                    )
+                    .child(
+                        div()
+                            .relative()
+                            .flex_1()
+                            .min_w_0()
+                            .child(video)
+                            .child(audio)
+                            .child(
+                                div()
+                                    .absolute()
+                                    .left(playhead)
+                                    .top_0()
+                                    .bottom_0()
+                                    .w(px(2.0))
+                                    .bg(color(&self.theme.accent)),
+                            ),
+                    ),
+            )
             .into_any_element()
     }
 }

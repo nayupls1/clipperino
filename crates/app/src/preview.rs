@@ -2,7 +2,7 @@ use std::{
     fs,
     io::Read,
     path::Path,
-    process::{Command, Stdio},
+    process::{Child, Command, Stdio},
     sync::{
         Arc,
         atomic::{AtomicU64, Ordering},
@@ -11,7 +11,7 @@ use std::{
     thread,
 };
 
-use clipperino_core::{config::AppConfig, media, project::Project};
+use clipperino_core::{config::AppConfig, error, media, project::Project};
 
 pub enum PreviewEvent {
     Frame {
@@ -148,16 +148,17 @@ fn stream(
         let start_seconds = format!("{:.3}", source_start as f64 / 1000.0);
         let duration_seconds = format!("{:.3}", duration as f64 / 1000.0);
         let mut audio = if source.has_audio {
-            Command::new("mpv")
-                .args(["--no-video", "--no-terminal", "--really-quiet", "--start"])
-                .arg(&start_seconds)
-                .arg("--length")
-                .arg(&duration_seconds)
-                .arg(&source_path)
-                .stdout(Stdio::null())
-                .stderr(Stdio::null())
-                .spawn()
-                .ok()
+            Some(
+                Command::new("mpv")
+                    .args(["--no-config", "--no-video", "--msg-level=all=error"])
+                    .arg(format!("--start={start_seconds}"))
+                    .arg(format!("--length={duration_seconds}"))
+                    .arg(&source_path)
+                    .stdout(Stdio::null())
+                    .stderr(Stdio::piped())
+                    .spawn()
+                    .map_err(|err| error(format!("Could not start preview audio (mpv): {err}")))?,
+            )
         } else {
             None
         };
@@ -187,10 +188,20 @@ fn stream(
         let mut pending = Vec::new();
         let mut chunk = [0_u8; 16 * 1024];
         let mut index = 0_u64;
+        let mut audio_failure = None;
         while current.load(Ordering::SeqCst) == generation {
             let size = stdout.read(&mut chunk)?;
             if size == 0 {
                 break;
+            }
+            if let Some(player) = audio.as_mut()
+                && let Some(status) = player.try_wait()?
+            {
+                if !status.success() {
+                    audio_failure = Some(audio_failure_message(player));
+                    break;
+                }
+                audio = None;
             }
             pending.extend_from_slice(&chunk[..size]);
             while let Some(end) = pending.windows(2).position(|bytes| bytes == [0xff, 0xd9]) {
@@ -211,10 +222,34 @@ fn stream(
         let _ = decoder.kill();
         let _ = decoder.wait();
         if let Some(mut audio) = audio.take() {
+            if audio_failure.is_none()
+                && let Some(status) = audio.try_wait()?
+                && !status.success()
+            {
+                audio_failure = Some(audio_failure_message(&mut audio));
+            }
             let _ = audio.kill();
             let _ = audio.wait();
+        }
+        if let Some(message) = audio_failure {
+            return Err(error(message));
         }
         timeline_start = timeline_end;
     }
     Ok(())
+}
+
+fn audio_failure_message(player: &mut Child) -> String {
+    let mut details = String::new();
+    if let Some(stderr) = player.stderr.as_mut() {
+        let _ = stderr.read_to_string(&mut details);
+    }
+    format!(
+        "Preview audio failed (mpv): {}",
+        details
+            .trim()
+            .lines()
+            .last()
+            .unwrap_or("unknown audio error")
+    )
 }

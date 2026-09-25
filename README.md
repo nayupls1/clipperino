@@ -26,7 +26,7 @@ cargo run -p clipperino -- auto-cut asset-1
 cargo run -p clipperino-app -- project.json
 ```
 
-The app can also create `project.json`, import videos with its file picker, download the model, transcribe the selected asset, and apply auto-cut. Drag panel headers onto other panels to swap them. Drag the bars between panels to resize them. The layout and theme choice save to the user config. The timeline has linked video and audio lanes, In/Out marks, range removal, and Undo.
+The app can also create `project.json`, import videos with its file picker, download the model, transcribe the selected asset, and apply auto-cut. Drag panel headers onto other panels to swap them. Drag the bars between panels to resize them. The layout and theme choice save to the user config. The timeline has linked video and audio lanes, a playhead that follows playback and seeking, In/Out marks, range removal, and Undo.
 
 Export with:
 
