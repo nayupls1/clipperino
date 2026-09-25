@@ -7,3 +7,4 @@ version.workspace = true
 [dependencies]
 clipperino-core.workspace = true
 gpui = "=0.2.2"
+image = { version = "=0.25.10", default-features = false, features = ["jpeg", "png"] }

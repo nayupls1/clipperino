@@ -1,10 +1,10 @@
 use std::{
     fs,
     io::Read,
-    path::Path,
+    path::{Path, PathBuf},
     process::{Child, Command, Stdio},
     sync::{
-        Arc,
+        Arc, Condvar, Mutex,
         atomic::{AtomicU64, Ordering},
         mpsc::{Receiver, SyncSender, sync_channel},
     },
@@ -12,12 +12,16 @@ use std::{
 };
 
 use clipperino_core::{config::AppConfig, error, media, project::Project};
+use gpui::{ImageFormat, RenderImage};
+
+const PREVIEW_FPS: u64 = 24;
 
 pub enum PreviewEvent {
     Frame {
         generation: u64,
         at_ms: u64,
-        bytes: Vec<u8>,
+        image: Arc<RenderImage>,
+        advances_playhead: bool,
     },
     Finished {
         generation: u64,
@@ -32,15 +36,39 @@ pub struct PreviewPlayer {
     tx: SyncSender<PreviewEvent>,
     rx: Receiver<PreviewEvent>,
     generation: Arc<AtomicU64>,
+    snapshots: Arc<(Mutex<SnapshotState>, Condvar)>,
+}
+
+struct SnapshotRequest {
+    project: Project,
+    project_path: PathBuf,
+    at_ms: u64,
+    config: AppConfig,
+    generation: u64,
+}
+
+#[derive(Default)]
+struct SnapshotState {
+    pending: Option<SnapshotRequest>,
+    closed: bool,
 }
 
 impl PreviewPlayer {
     pub fn new() -> Self {
-        let (tx, rx) = sync_channel(3);
+        let (tx, rx) = sync_channel(2);
+        let generation = Arc::new(AtomicU64::new(0));
+        let snapshots = Arc::new((Mutex::new(SnapshotState::default()), Condvar::new()));
+        thread::spawn({
+            let tx = tx.clone();
+            let current = generation.clone();
+            let snapshots = snapshots.clone();
+            move || snapshot_worker(&snapshots, &current, &tx)
+        });
         Self {
             tx,
             rx,
-            generation: Arc::new(AtomicU64::new(0)),
+            generation,
+            snapshots,
         }
     }
 
@@ -54,41 +82,15 @@ impl PreviewPlayer {
 
     pub fn show_frame(&self, project: Project, project_path: &Path, at_ms: u64, config: AppConfig) {
         let generation = self.generation.fetch_add(1, Ordering::SeqCst) + 1;
-        let tx = self.tx.clone();
-        let project_path = project_path.to_owned();
-        thread::spawn(move || {
-            let result: clipperino_core::Result<Vec<u8>> = (|| {
-                let (asset, source_at) = media::timeline_source(&project, at_ms)?;
-                let path = std::env::temp_dir().join(format!(
-                    "clipperino-preview-{}-{generation}.png",
-                    std::process::id()
-                ));
-                media::frame(
-                    &media::asset_path(&project_path, asset),
-                    source_at,
-                    &path,
-                    &config,
-                )?;
-                let bytes = fs::read(&path)?;
-                let _ = fs::remove_file(path);
-                Ok(bytes)
-            })();
-            match result {
-                Ok(bytes) => {
-                    let _ = tx.try_send(PreviewEvent::Frame {
-                        generation,
-                        at_ms,
-                        bytes,
-                    });
-                }
-                Err(error) => {
-                    let _ = tx.try_send(PreviewEvent::Error {
-                        generation,
-                        message: error.to_string(),
-                    });
-                }
-            }
+        let (state, wake) = &*self.snapshots;
+        state.lock().unwrap().pending = Some(SnapshotRequest {
+            project,
+            project_path: project_path.to_owned(),
+            at_ms,
+            config,
+            generation,
         });
+        wake.notify_one();
     }
 
     pub fn play(&self, project: Project, project_path: &Path, from_ms: u64, config: AppConfig) {
@@ -119,6 +121,89 @@ impl PreviewPlayer {
     pub fn is_current(&self, generation: u64) -> bool {
         self.generation.load(Ordering::SeqCst) == generation
     }
+}
+
+impl Drop for PreviewPlayer {
+    fn drop(&mut self) {
+        let (state, wake) = &*self.snapshots;
+        state.lock().unwrap().closed = true;
+        wake.notify_one();
+        self.stop();
+    }
+}
+
+fn snapshot_worker(
+    snapshots: &Arc<(Mutex<SnapshotState>, Condvar)>,
+    current: &AtomicU64,
+    tx: &SyncSender<PreviewEvent>,
+) {
+    loop {
+        let request = {
+            let (state, wake) = &**snapshots;
+            let mut state = state.lock().unwrap();
+            while state.pending.is_none() && !state.closed {
+                state = wake.wait(state).unwrap();
+            }
+            if state.closed {
+                return;
+            }
+            state.pending.take().unwrap()
+        };
+        if current.load(Ordering::SeqCst) != request.generation {
+            continue;
+        }
+        let result: clipperino_core::Result<Arc<RenderImage>> = (|| {
+            let (asset, source_at) = media::timeline_source(&request.project, request.at_ms)?;
+            let path = std::env::temp_dir().join(format!(
+                "clipperino-preview-{}-{}.png",
+                std::process::id(),
+                request.generation
+            ));
+            let result = (|| {
+                media::frame(
+                    &media::asset_path(&request.project_path, asset),
+                    source_at,
+                    &path,
+                    &request.config,
+                )?;
+                render_frame(fs::read(&path)?, ImageFormat::Png)
+            })();
+            let _ = fs::remove_file(path);
+            result
+        })();
+        if current.load(Ordering::SeqCst) != request.generation {
+            continue;
+        }
+        match result {
+            Ok(image) => {
+                let _ = tx.send(PreviewEvent::Frame {
+                    generation: request.generation,
+                    at_ms: request.at_ms,
+                    image,
+                    advances_playhead: false,
+                });
+            }
+            Err(err) => {
+                let _ = tx.send(PreviewEvent::Error {
+                    generation: request.generation,
+                    message: err.to_string(),
+                });
+            }
+        }
+    }
+}
+
+fn render_frame(bytes: Vec<u8>, format: ImageFormat) -> clipperino_core::Result<Arc<RenderImage>> {
+    let format = match format {
+        ImageFormat::Png => image::ImageFormat::Png,
+        ImageFormat::Jpeg => image::ImageFormat::Jpeg,
+        _ => return Err(error("unsupported preview image format")),
+    };
+    let mut pixels = image::load_from_memory_with_format(&bytes, format)?.into_rgba8();
+    for pixel in pixels.as_chunks_mut::<4>().0 {
+        pixel.swap(0, 2);
+    }
+    Ok(Arc::new(RenderImage::new([image::Frame::new(pixels)])))
 }
 
 fn stream(
@@ -170,7 +255,10 @@ fn stream(
             .arg("-t")
             .arg(&duration_seconds)
             .arg("-vf")
-            .arg(format!("fps=15,scale={}:-2", config.preview_width))
+            .arg(format!(
+                "fps={PREVIEW_FPS},scale={}:-2",
+                config.preview_width
+            ))
             .args([
                 "-an",
                 "-q:v",
@@ -209,12 +297,15 @@ fn stream(
                 let frame = start.map(|start| pending[start..end + 2].to_vec());
                 pending.drain(..end + 2);
                 if let Some(bytes) = frame {
-                    let at_ms = timeline_start + skipped + index * 1000 / 15;
-                    let _ = tx.try_send(PreviewEvent::Frame {
-                        generation,
-                        at_ms,
-                        bytes,
-                    });
+                    let at_ms = timeline_start + skipped + index * 1000 / PREVIEW_FPS;
+                    if let Ok(image) = render_frame(bytes, ImageFormat::Jpeg) {
+                        let _ = tx.try_send(PreviewEvent::Frame {
+                            generation,
+                            at_ms,
+                            image,
+                            advances_playhead: true,
+                        });
+                    }
                     index += 1;
                 }
             }

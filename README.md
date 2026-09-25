@@ -26,7 +26,7 @@ cargo run -p clipperino -- auto-cut asset-1
 cargo run -p clipperino-app -- project.json
 ```
 
-The app can also create `project.json`, import videos with its file picker, download the model, transcribe the selected asset, and apply auto-cut. Drag panel headers onto other panels to swap them. Drag the bars between panels to resize them. The layout and theme choice save to the user config. The timeline has linked video and audio lanes, a playhead that follows playback and seeking, In/Out marks, range removal, and Undo.
+The app can also create `project.json`, import videos with its file picker, download the model, transcribe the selected asset, and apply auto-cut. Drag panel headers onto other panels to swap them. Drag the bars between panels to resize them. The layout and theme choice save to the user config. Click or drag across the timeline ruler or tracks to scrub with the playhead. The timeline has linked video and audio lanes, In/Out marks, range removal, and Undo.
 
 Export with:
 
@@ -57,4 +57,4 @@ Set `/custom_theme` in the user config to the theme file path. Relative theme pa
 
 User config lives at `$XDG_CONFIG_HOME/clipperino/config.json`, or `~/.config/clipperino/config.json`. Local models live at `$XDG_DATA_HOME/clipperino/models/`, or `~/.local/share/clipperino/models/`. The project cache and undo history live beside `project.json` in `.clipperino-cache/`.
 
-Preview video uses a 15 fps proxy stream from FFmpeg, with mpv playing the source audio. It is intended for selecting cuts; final export re-encodes from the original media. Playback can briefly pause at a cut between source segments. For precise review, render the project and check the output.
+Preview video uses a 24 fps proxy stream from FFmpeg, with mpv playing the source audio. It is intended for selecting cuts; final export re-encodes from the original media. Playback can briefly pause at a cut between source segments. For precise review, render the project and check the output.

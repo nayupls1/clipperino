@@ -164,25 +164,25 @@ pub struct Theme {
 impl Theme {
     pub fn light() -> Self {
         Self {
-            background: "#f2f2f0".into(),
+            background: "#f7f7f8".into(),
             panel: "#ffffff".into(),
-            text: "#202020".into(),
-            muted_text: "#686868".into(),
-            border: "#d8d8d5".into(),
-            accent: "#2867b2".into(),
-            selected: "#dceaff".into(),
+            text: "#18181b".into(),
+            muted_text: "#71717a".into(),
+            border: "#e4e4e7".into(),
+            accent: "#2563eb".into(),
+            selected: "#eff6ff".into(),
         }
     }
 
     pub fn dark() -> Self {
         Self {
-            background: "#17191c".into(),
-            panel: "#22252a".into(),
-            text: "#eeeeee".into(),
-            muted_text: "#a2a7ae".into(),
-            border: "#3c4148".into(),
-            accent: "#79afff".into(),
-            selected: "#284365".into(),
+            background: "#09090b".into(),
+            panel: "#18181b".into(),
+            text: "#fafafa".into(),
+            muted_text: "#a1a1aa".into(),
+            border: "#27272a".into(),
+            accent: "#60a5fa".into(),
+            selected: "#1e3a5f".into(),
         }
     }
 

@@ -7,26 +7,31 @@ use clipperino_core::{
     project::{Project, ProjectStore, TranscriptEntry},
 };
 use gpui::{
-    App, Application, Bounds, Context, DragMoveEvent, Hsla, Image, ImageFormat, IntoElement,
-    ObjectFit, PathPromptOptions, Render, Timer, Window, WindowBounds, WindowOptions, div, img,
-    prelude::*, px, relative, rgb, size,
+    App, Application, Bounds, Context, DragMoveEvent, Hsla, IntoElement, MouseButton,
+    MouseDownEvent, MouseMoveEvent, ObjectFit, PathPromptOptions, Render, RenderImage, Timer,
+    Window, WindowBounds, WindowOptions, canvas, div, img, prelude::*, px, relative, rgb, size,
 };
 use preview::{PreviewEvent, PreviewPlayer};
 use std::{
+    cell::Cell,
     fs,
     path::PathBuf,
+    rc::Rc,
     sync::{
         Arc,
         mpsc::{self, Receiver, Sender},
     },
-    time::{Duration, SystemTime},
+    time::{Duration, Instant, SystemTime},
 };
 
 #[derive(Clone, Copy)]
 struct PanelDrag(PanelId);
 #[derive(Clone)]
 struct SplitDrag(Vec<bool>);
+#[derive(Clone, Copy)]
+struct TimelineDrag;
 struct DragGhost(&'static str);
+struct TimelineGhost;
 
 enum JobEvent {
     Transcript(String, Vec<TranscriptEntry>),
@@ -41,6 +46,12 @@ impl Render for DragGhost {
     }
 }
 
+impl Render for TimelineGhost {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        div().w(px(1.0)).h(px(1.0))
+    }
+}
+
 struct Editor {
     store: ProjectStore,
     project: Project,
@@ -48,14 +59,18 @@ struct Editor {
     theme: Theme,
     selected_asset: Option<String>,
     preview_at_ms: u64,
-    preview_image: Option<Arc<Image>>,
+    preview_image: Option<Arc<RenderImage>>,
     preview: PreviewPlayer,
     job_tx: Sender<JobEvent>,
     job_rx: Receiver<JobEvent>,
     playing: bool,
+    scrubbing: bool,
+    last_scrub_request: Option<Instant>,
+    timeline_bounds: Rc<Cell<(f32, f32)>>,
     mark_in: Option<u64>,
     mark_out: Option<u64>,
     status: String,
+    last_file_check: Instant,
     project_modified: Option<SystemTime>,
     config_modified: Option<SystemTime>,
     theme_modified: Option<SystemTime>,
@@ -85,9 +100,13 @@ impl Editor {
             job_tx,
             job_rx,
             playing: false,
+            scrubbing: false,
+            last_scrub_request: None,
+            timeline_bounds: Rc::new(Cell::new((0.0, 0.0))),
             mark_in: None,
             mark_out: None,
             status: "Ready".into(),
+            last_file_check: Instant::now(),
             project_modified,
             config_modified,
             theme_modified,
@@ -143,15 +162,13 @@ impl Editor {
                 PreviewEvent::Frame {
                     generation,
                     at_ms,
-                    bytes,
+                    image,
+                    advances_playhead,
                 } if self.preview.is_current(generation) => {
-                    let format = if bytes.starts_with(&[0x89, b'P', b'N', b'G']) {
-                        ImageFormat::Png
-                    } else {
-                        ImageFormat::Jpeg
-                    };
-                    self.preview_image = Some(Arc::new(Image::from_bytes(format, bytes)));
-                    self.preview_at_ms = at_ms;
+                    self.preview_image = Some(image);
+                    if advances_playhead {
+                        self.preview_at_ms = at_ms;
+                    }
                     changed = true;
                 }
                 PreviewEvent::Finished { generation } if self.preview.is_current(generation) => {
@@ -169,47 +186,50 @@ impl Editor {
                 _ => {}
             }
         }
-        let project_modified = modified(self.store.path());
-        if project_modified != self.project_modified
-            && let Ok(project) = self.store.load()
-        {
-            self.preview.stop();
-            self.playing = false;
-            self.project = project;
-            self.project_modified = project_modified;
-            self.preview_at_ms = self
-                .preview_at_ms
-                .min(self.project.duration_ms().saturating_sub(1));
-            self.refresh_frame();
-            changed = true;
-        }
-        let config_modified = AppConfig::path().ok().and_then(|path| modified(&path));
-        if config_modified != self.config_modified
-            && let Ok(config) = AppConfig::load()
-        {
-            self.theme = config.resolved_theme().unwrap_or_else(|_| Theme::light());
-            self.config = config;
-            self.config_modified = config_modified;
-            self.theme_modified = self
+        if self.last_file_check.elapsed() >= Duration::from_millis(250) {
+            self.last_file_check = Instant::now();
+            let project_modified = modified(self.store.path());
+            if project_modified != self.project_modified
+                && let Ok(project) = self.store.load()
+            {
+                self.preview.stop();
+                self.playing = false;
+                self.project = project;
+                self.project_modified = project_modified;
+                self.preview_at_ms = self
+                    .preview_at_ms
+                    .min(self.project.duration_ms().saturating_sub(1));
+                self.refresh_frame();
+                changed = true;
+            }
+            let config_modified = AppConfig::path().ok().and_then(|path| modified(&path));
+            if config_modified != self.config_modified
+                && let Ok(config) = AppConfig::load()
+            {
+                self.theme = config.resolved_theme().unwrap_or_else(|_| Theme::light());
+                self.config = config;
+                self.config_modified = config_modified;
+                self.theme_modified = self
+                    .config
+                    .theme_file_path()
+                    .ok()
+                    .flatten()
+                    .and_then(|path| modified(&path));
+                changed = true;
+            }
+            let theme_modified = self
                 .config
                 .theme_file_path()
                 .ok()
                 .flatten()
                 .and_then(|path| modified(&path));
-            changed = true;
-        }
-        let theme_modified = self
-            .config
-            .theme_file_path()
-            .ok()
-            .flatten()
-            .and_then(|path| modified(&path));
-        if theme_modified != self.theme_modified
-            && let Ok(theme) = self.config.resolved_theme()
-        {
-            self.theme = theme;
-            self.theme_modified = theme_modified;
-            changed = true;
+            if theme_modified != self.theme_modified
+                && let Ok(theme) = self.config.resolved_theme()
+            {
+                self.theme = theme;
+                self.theme_modified = theme_modified;
+                changed = true;
+            }
         }
         if changed {
             cx.notify();
@@ -230,10 +250,49 @@ impl Editor {
     }
 
     fn seek(&mut self, at_ms: u64, cx: &mut Context<Self>) {
+        self.preview.stop();
         self.playing = false;
+        self.scrubbing = false;
         self.preview_at_ms = at_ms.min(self.project.duration_ms().saturating_sub(1));
         self.refresh_frame();
         cx.notify();
+    }
+
+    fn begin_scrub(&mut self, position_x: f32, cx: &mut Context<Self>) {
+        self.preview.stop();
+        self.playing = false;
+        self.scrubbing = true;
+        self.last_scrub_request = None;
+        self.scrub_to(position_x, cx);
+    }
+
+    fn scrub_to(&mut self, position_x: f32, cx: &mut Context<Self>) {
+        let (left, width) = self.timeline_bounds.get();
+        if width <= 0.0 || self.project.duration_ms() == 0 {
+            return;
+        }
+        let fraction = ((position_x - left) / width).clamp(0.0, 1.0);
+        let at_ms = (fraction * self.project.duration_ms() as f32).round() as u64;
+        let at_ms = at_ms.min(self.project.duration_ms().saturating_sub(1));
+        if at_ms != self.preview_at_ms {
+            self.preview_at_ms = at_ms;
+            if self
+                .last_scrub_request
+                .is_none_or(|last| last.elapsed() >= Duration::from_millis(70))
+            {
+                self.refresh_frame();
+                self.last_scrub_request = Some(Instant::now());
+            }
+            cx.notify();
+        }
+    }
+
+    fn finish_scrub(&mut self, cx: &mut Context<Self>) {
+        if self.scrubbing {
+            self.scrubbing = false;
+            self.refresh_frame();
+            cx.notify();
+        }
     }
 
     fn seek_source(&mut self, asset_id: &str, source_ms: u64, cx: &mut Context<Self>) {
@@ -479,12 +538,38 @@ fn panel_title(panel: PanelId) -> &'static str {
 fn control(label: &'static str, theme: &Theme) -> gpui::Stateful<gpui::Div> {
     div()
         .id(label)
-        .px_2()
-        .py_1()
+        .h(px(30.0))
+        .flex()
+        .items_center()
+        .justify_center()
+        .px_3()
+        .text_sm()
+        .font_weight(gpui::FontWeight::MEDIUM)
+        .bg(color(&theme.panel))
+        .text_color(color(&theme.text))
         .border_1()
         .border_color(color(&theme.border))
-        .rounded_sm()
+        .rounded_md()
         .cursor_pointer()
+        .hover(|this| this.bg(color(&theme.selected)))
+        .child(label)
+}
+
+fn primary_control(label: &'static str, theme: &Theme) -> gpui::Stateful<gpui::Div> {
+    div()
+        .id(label)
+        .h(px(32.0))
+        .flex()
+        .items_center()
+        .justify_center()
+        .px_3()
+        .text_sm()
+        .font_weight(gpui::FontWeight::MEDIUM)
+        .bg(color(&theme.text))
+        .text_color(color(&theme.panel))
+        .rounded_md()
+        .cursor_pointer()
+        .hover(|this| this.opacity(0.85))
         .child(label)
 }
 fn time_label(ms: u64) -> String {
@@ -540,7 +625,7 @@ fn main() {
                     editor.refresh_frame();
                     cx.spawn(async move |this, cx| {
                         loop {
-                            Timer::after(Duration::from_millis(80)).await;
+                            Timer::after(Duration::from_millis(16)).await;
                             if this
                                 .update(cx, |editor: &mut Editor, cx| editor.poll(cx))
                                 .is_err()
