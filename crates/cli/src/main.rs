@@ -156,19 +156,7 @@ fn run() -> Result<()> {
             print(&json!({"project": args.project, "revision": 0}))?;
         }
         Command::Import { path } => {
-            let absolute = fs::canonicalize(path)?;
-            let mut asset = media::probe(&absolute, &config)?;
-            let parent = args
-                .project
-                .parent()
-                .filter(|path| !path.as_os_str().is_empty())
-                .unwrap_or_else(|| std::path::Path::new("."));
-            if let Ok(directory) = fs::canonicalize(parent)
-                && let Ok(relative) = absolute.strip_prefix(directory)
-            {
-                asset.path = relative.to_string_lossy().into_owned();
-            }
-            let id = store.update(|project| project.add_asset(asset))?;
+            let id = media::import(&store, &path, &config)?;
             print(&json!({"asset_id": id}))?;
         }
         Command::Inspect => print(&store.load()?)?,

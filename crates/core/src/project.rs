@@ -35,7 +35,7 @@ impl Default for Project {
     }
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Asset {
     pub id: String,
     pub path: String,
@@ -45,7 +45,7 @@ pub struct Asset {
     pub has_audio: bool,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TranscriptEntry {
     pub id: String,
     pub asset_id: String,
@@ -54,7 +54,7 @@ pub struct TranscriptEntry {
     pub text: String,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Segment {
     pub id: String,
     pub asset_id: String,
@@ -101,6 +101,20 @@ impl Project {
 
     pub fn duration_ms(&self) -> u64 {
         self.segments.iter().map(Segment::duration_ms).sum()
+    }
+
+    /// Maps a source position to the assembled timeline, if that source moment is still kept.
+    pub fn source_to_timeline(&self, asset_id: &str, source_ms: u64) -> Option<u64> {
+        let mut position = 0;
+        for segment in &self.segments {
+            if segment.asset_id == asset_id
+                && (segment.source_start_ms..segment.source_end_ms).contains(&source_ms)
+            {
+                return Some(position + source_ms - segment.source_start_ms);
+            }
+            position += segment.duration_ms();
+        }
+        None
     }
 
     pub fn validate(&self) -> Result<()> {

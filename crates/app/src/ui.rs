@@ -1,42 +1,47 @@
 use super::*;
 
+/// Segments narrower than this on screen skip their labels.
+const MIN_LABELLED_SEGMENT_PX: f32 = 64.0;
+
 impl Editor {
     fn render_layout(
         &mut self,
         node: &LayoutNode,
         path: Vec<bool>,
+        playhead: u64,
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
         match node {
-            LayoutNode::Panel { panel } => self.render_panel(*panel, cx),
+            LayoutNode::Panel { panel } => self.render_panel(*panel, playhead, cx),
             LayoutNode::Split {
                 axis,
                 ratio,
                 first,
                 second,
             } => {
+                let palette = self.palette;
                 let horizontal = matches!(axis, Axis::Horizontal);
                 let mut first_path = path.clone();
                 first_path.push(false);
                 let mut second_path = path.clone();
                 second_path.push(true);
-                let first_view = self.render_layout(first, first_path, cx);
-                let second_view = self.render_layout(second, second_path, cx);
+                let first_view = self.render_layout(first, first_path, playhead, cx);
+                let second_view = self.render_layout(second, second_path, playhead, cx);
                 let handle = div()
-                    .id(gpui::SharedString::from(format!("handle-{path:?}")))
+                    .id(SharedString::from(format!("handle-{path:?}")))
                     .flex_none()
                     .flex()
                     .items_center()
                     .justify_center()
                     .when(horizontal, |this| this.w(px(7.0)).cursor_col_resize())
                     .when(!horizontal, |this| this.h(px(7.0)).cursor_row_resize())
-                    .bg(color(&self.theme.background))
-                    .hover(|this| this.bg(color(&self.theme.selected)))
+                    .bg(palette.background)
+                    .hover(|this| this.bg(palette.selected))
                     .child(
                         div()
                             .when(horizontal, |this| this.w(px(1.0)).h(px(30.0)))
                             .when(!horizontal, |this| this.h(px(1.0)).w(px(30.0)))
-                            .bg(color(&self.theme.border)),
+                            .bg(palette.border),
                     )
                     .on_drag(SplitDrag(path.clone()), |_, _, _, cx| {
                         cx.new(|_| DragGhost("Resize"))
@@ -49,7 +54,7 @@ impl Editor {
                     .child(first_view);
                 let second_box = div().flex_1().min_w_0().min_h_0().child(second_view);
                 div()
-                    .id(gpui::SharedString::from(format!("split-{path:?}")))
+                    .id(SharedString::from(format!("split-{path:?}")))
                     .size_full()
                     .flex()
                     .when(horizontal, |this| this.flex_row())
@@ -90,10 +95,16 @@ impl Editor {
         }
     }
 
-    fn render_panel(&mut self, panel: PanelId, cx: &mut Context<Self>) -> gpui::AnyElement {
+    fn render_panel(
+        &mut self,
+        panel: PanelId,
+        playhead: u64,
+        cx: &mut Context<Self>,
+    ) -> gpui::AnyElement {
+        let palette = self.palette;
         let title = panel_title(panel);
         let header = div()
-            .id(gpui::SharedString::from(format!("header-{title}")))
+            .id(SharedString::from(format!("header-{title}")))
             .h(px(40.0))
             .flex_none()
             .flex()
@@ -102,14 +113,14 @@ impl Editor {
             .px_3()
             .text_sm()
             .font_weight(gpui::FontWeight::SEMIBOLD)
-            .text_color(color(&self.theme.text))
+            .text_color(palette.text)
             .border_b_1()
-            .border_color(color(&self.theme.border))
+            .border_color(palette.border)
             .cursor_move()
             .child(title)
             .child(
                 div()
-                    .text_color(color(&self.theme.muted_text))
+                    .text_color(palette.muted_text)
                     .font_weight(gpui::FontWeight::NORMAL)
                     .child("⋮⋮"),
             )
@@ -118,21 +129,21 @@ impl Editor {
             });
         let content = match panel {
             PanelId::Assets => self.assets_panel(cx),
-            PanelId::Preview => self.preview_panel(cx),
+            PanelId::Preview => self.preview_panel(playhead, cx),
             PanelId::Transcript => self.transcript_panel(cx),
-            PanelId::Timeline => self.timeline_panel(cx),
+            PanelId::Timeline => self.timeline_panel(playhead, cx),
         };
         div()
-            .id(gpui::SharedString::from(format!("panel-{title}")))
+            .id(SharedString::from(format!("panel-{title}")))
             .size_full()
             .min_w_0()
             .min_h_0()
             .flex()
             .flex_col()
-            .bg(color(&self.theme.panel))
-            .text_color(color(&self.theme.text))
+            .bg(palette.panel)
+            .text_color(palette.text)
             .border_1()
-            .border_color(color(&self.theme.border))
+            .border_color(palette.border)
             .rounded_lg()
             .shadow_sm()
             .overflow_hidden()
@@ -149,9 +160,10 @@ impl Editor {
     }
 
     fn assets_panel(&self, cx: &mut Context<Self>) -> gpui::AnyElement {
+        let palette = self.palette;
         let mut body = div().id("asset-list").flex_1().overflow_y_scroll().p_3();
         body = body.child(
-            primary_control("+ Import videos", &self.theme)
+            primary_control("+ Import videos", &palette)
                 .id("import-button")
                 .w_full()
                 .mb_3()
@@ -172,7 +184,7 @@ impl Editor {
         );
         if self.config.model_path.is_none() {
             body = body.child(
-                control("Download English model", &self.theme)
+                control("Download English model", &palette)
                     .mb_2()
                     .on_click(cx.listener(|this, _, _, cx| this.download_model(cx))),
             );
@@ -184,23 +196,28 @@ impl Editor {
                 .gap_2()
                 .mb_4()
                 .child(
-                    control("Transcribe selected", &self.theme)
+                    control("Transcribe selected", &palette)
                         .on_click(cx.listener(|this, _, _, cx| this.transcribe_selected(cx))),
                 )
                 .child(
-                    control("Auto cut selected", &self.theme)
+                    control("Auto cut selected", &palette)
                         .on_click(cx.listener(|this, _, _, cx| this.auto_cut_selected(cx))),
                 ),
         );
-        for asset in &self.project.assets {
-            let id = asset.id.clone();
-            let label = PathBuf::from(&asset.path)
-                .file_name()
-                .map(|name| name.to_string_lossy().into_owned())
-                .unwrap_or_else(|| asset.path.clone());
+        if self.project.assets.is_empty() {
             body = body.child(
                 div()
-                    .id(gpui::SharedString::from(format!("asset-{id}")))
+                    .text_xs()
+                    .text_color(palette.muted_text)
+                    .child("Or drop video files anywhere in the window."),
+            );
+        }
+        for asset in &self.project.assets {
+            let id = asset.id.clone();
+            let label = file_label(Path::new(&asset.path));
+            body = body.child(
+                div()
+                    .id(SharedString::from(format!("asset-{id}")))
                     .h(px(56.0))
                     .flex()
                     .items_center()
@@ -208,30 +225,30 @@ impl Editor {
                     .px_3()
                     .mb_2()
                     .border_1()
-                    .border_color(color(&self.theme.border))
+                    .border_color(palette.border)
                     .rounded_md()
                     .cursor_pointer()
                     .when(self.selected_asset.as_deref() == Some(&id), |this| {
-                        this.bg(color(&self.theme.selected))
+                        this.bg(palette.selected).border_color(palette.accent)
                     })
-                    .hover(|this| this.bg(color(&self.theme.selected)))
+                    .hover(|this| this.bg(palette.selected))
                     .child(
                         div()
                             .min_w_0()
                             .flex()
                             .flex_col()
                             .gap_1()
-                            .child(div().text_sm().child(label))
+                            .child(div().text_sm().truncate().child(label))
                             .child(
                                 div()
                                     .text_xs()
-                                    .text_color(color(&self.theme.muted_text))
+                                    .text_color(palette.muted_text)
                                     .child(format!("{} · {}", id, time_label(asset.duration_ms))),
                             ),
                     )
-                    .child(div().text_color(color(&self.theme.muted_text)).child("›"))
+                    .child(div().text_color(palette.muted_text).child("›"))
                     .on_click(cx.listener(move |this, _, _, cx| {
-                        this.selected_asset = Some(id.clone());
+                        this.select_asset(id.clone());
                         this.seek_source(&id, 0, cx);
                     })),
             );
@@ -239,7 +256,8 @@ impl Editor {
         body.into_any_element()
     }
 
-    fn preview_panel(&self, cx: &mut Context<Self>) -> gpui::AnyElement {
+    fn preview_panel(&self, playhead: u64, cx: &mut Context<Self>) -> gpui::AnyElement {
+        let palette = self.palette;
         let image = if let Some(image) = &self.preview_image {
             img(image.clone())
                 .size_full()
@@ -251,7 +269,7 @@ impl Editor {
                 .flex()
                 .justify_center()
                 .items_center()
-                .text_color(color(&self.theme.muted_text))
+                .text_color(palette.muted_text)
                 .child("Import a video to begin")
                 .into_any_element()
         };
@@ -280,28 +298,27 @@ impl Editor {
                     .gap_2()
                     .px_3()
                     .child(
-                        primary_control(if self.playing { "Pause" } else { "Play" }, &self.theme)
+                        primary_control(if self.playing { "Pause" } else { "Play" }, &palette)
+                            .w(px(72.0))
                             .on_click(cx.listener(|this, _, _, cx| this.toggle_play(cx))),
                     )
                     .child(
-                        control("−1s", &self.theme).on_click(cx.listener(|this, _, _, cx| {
-                            this.seek(this.preview_at_ms.saturating_sub(1000), cx)
-                        })),
+                        control("−1s", &palette)
+                            .on_click(cx.listener(|this, _, _, cx| this.seek_by(-1000, cx))),
                     )
                     .child(
-                        control("+1s", &self.theme).on_click(cx.listener(|this, _, _, cx| {
-                            this.seek(this.preview_at_ms.saturating_add(1000), cx)
-                        })),
+                        control("+1s", &palette)
+                            .on_click(cx.listener(|this, _, _, cx| this.seek_by(1000, cx))),
                     )
                     .child(
                         div()
                             .flex_1()
                             .text_right()
                             .text_sm()
-                            .text_color(color(&self.theme.muted_text))
+                            .text_color(palette.muted_text)
                             .child(format!(
                                 "{} / {}",
-                                time_label(self.preview_at_ms),
+                                time_label(playhead),
                                 time_label(self.project.duration_ms())
                             )),
                     ),
@@ -310,77 +327,78 @@ impl Editor {
     }
 
     fn transcript_panel(&self, cx: &mut Context<Self>) -> gpui::AnyElement {
-        let mut body = div()
-            .id("transcript-list")
-            .flex_1()
-            .overflow_y_scroll()
-            .p_3();
-        let entries: Vec<_> = self
-            .project
-            .transcript
-            .iter()
-            .filter(|entry| self.selected_asset.as_deref() == Some(entry.asset_id.as_str()))
-            .collect();
-        if entries.is_empty() {
-            body = body.child(
-                div()
-                    .p_4()
-                    .rounded_md()
-                    .border_1()
-                    .border_color(color(&self.theme.border))
-                    .text_color(color(&self.theme.muted_text))
-                    .child("Transcribe the selected asset to see its text here."),
-            );
+        let palette = self.palette;
+        if self.transcript_rows.is_empty() {
+            return div()
+                .flex_1()
+                .p_3()
+                .child(
+                    div()
+                        .p_4()
+                        .rounded_md()
+                        .border_1()
+                        .border_color(palette.border)
+                        .text_color(palette.muted_text)
+                        .child("Transcribe the selected asset to see its text here."),
+                )
+                .into_any_element();
         }
-        let group_size = if self.config.transcript_word_timestamps {
-            8
-        } else {
-            1
-        };
-        for group in entries.chunks(group_size) {
-            let first = group[0];
-            let asset_id = first.asset_id.clone();
-            let at_ms = first.source_start_ms;
-            let text = group
-                .iter()
-                .map(|entry| entry.text.as_str())
-                .collect::<Vec<_>>()
-                .join(" ");
-            body = body.child(
-                div()
-                    .id(gpui::SharedString::from(first.id.clone()))
-                    .p_3()
-                    .mb_2()
-                    .rounded_md()
-                    .border_1()
-                    .border_color(color(&self.theme.border))
-                    .cursor_pointer()
-                    .hover(|this| this.bg(color(&self.theme.selected)))
-                    .child(
-                        div()
-                            .text_xs()
-                            .text_color(color(&self.theme.accent))
-                            .mb_1()
-                            .child(time_label(at_ms)),
-                    )
-                    .child(div().text_sm().child(text))
-                    .on_click(
-                        cx.listener(move |this, _, _, cx| this.seek_source(&asset_id, at_ms, cx)),
-                    ),
-            );
-        }
-        body.into_any_element()
+        let rows = self.transcript_rows.clone();
+        let active = self.active_row;
+        let editor = cx.entity().downgrade();
+        // Only visible passages are laid out, so long transcripts stay cheap to draw.
+        let passages = list(self.transcript_list.clone(), move |index, _, _| {
+            let row = &rows[index];
+            let asset_id = row.asset_id.clone();
+            let at_ms = row.start_ms;
+            let editor = editor.clone();
+            div()
+                .px_3()
+                .pb_2()
+                .when(index == 0, |this| this.pt_3())
+                .child(
+                    div()
+                        .id(row.id.clone())
+                        .p_3()
+                        .rounded_md()
+                        .border_1()
+                        .border_color(palette.border)
+                        .cursor_pointer()
+                        .when(active == Some(index), |this| {
+                            this.bg(palette.selected).border_color(palette.accent)
+                        })
+                        .hover(|this| this.bg(palette.selected))
+                        .child(
+                            div()
+                                .text_xs()
+                                .text_color(palette.accent)
+                                .mb_1()
+                                .child(row.time.clone()),
+                        )
+                        .child(div().text_sm().child(row.text.clone()))
+                        .on_click(move |_, _, cx| {
+                            let _ = editor
+                                .update(cx, |this, cx| this.seek_source(&asset_id, at_ms, cx));
+                        }),
+                )
+                .into_any_element()
+        })
+        .size_full();
+        div().flex_1().min_h_0().child(passages).into_any_element()
     }
 
-    fn timeline_panel(&self, cx: &mut Context<Self>) -> gpui::AnyElement {
+    fn timeline_panel(&self, playhead: u64, cx: &mut Context<Self>) -> gpui::AnyElement {
+        let palette = self.palette;
         let total = self.project.duration_ms().max(1);
-        let playhead = relative(self.preview_at_ms.min(total) as f32 / total as f32);
+        let fraction = |ms: u64| relative(ms.min(total) as f32 / total as f32);
+        let playhead_at = fraction(playhead);
         let timeline_bounds = self.timeline_bounds.clone();
+        let track_width = self.timeline_bounds.get().1;
         let mut ruler = div()
             .h(px(24.0))
             .relative()
             .border_b_1()
-            .border_color(color(&self.theme.border));
+            .border_color(palette.border);
         for step in 0..4 {
             let at = total * step / 4;
             ruler = ruler.child(
@@ -388,60 +406,57 @@ impl Editor {
                     .absolute()
                     .left(relative(step as f32 / 4.0))
                     .top(px(4.0))
+                    .pl_1()
                     .text_xs()
-                    .text_color(color(&self.theme.muted_text))
+                    .text_color(palette.muted_text)
                     .child(time_label(at)),
             );
         }
-        let mut video = div()
-            .h(px(52.0))
-            .flex()
-            .min_w_0()
-            .bg(color(&self.theme.background));
-        let mut audio = div()
-            .h(px(52.0))
-            .flex()
-            .min_w_0()
-            .bg(color(&self.theme.background));
+        let mut video = div().h(px(52.0)).flex().min_w_0().bg(palette.background);
+        let mut audio = div().h(px(52.0)).flex().min_w_0().bg(palette.background);
         for segment in &self.project.segments {
-            let width = relative(segment.duration_ms() as f32 / total as f32);
-            let id = segment.id.clone();
+            let share = segment.duration_ms() as f32 / total as f32;
+            let labelled = share * track_width >= MIN_LABELLED_SEGMENT_PX;
             video = video.child(
                 div()
-                    .id(gpui::SharedString::from(format!("video-{id}")))
-                    .w(width)
+                    .w(relative(share))
                     .h_full()
                     .min_w_0()
                     .overflow_hidden()
                     .border_1()
-                    .border_color(color(&self.theme.accent))
-                    .bg(color(&self.theme.selected))
+                    .border_color(palette.accent)
+                    .bg(palette.selected)
                     .rounded_sm()
-                    .p_2()
-                    .child(
-                        div()
-                            .text_xs()
-                            .text_color(color(&self.theme.muted_text))
-                            .child("CLIP"),
-                    )
-                    .child(div().text_sm().child(segment.asset_id.clone())),
+                    .when(labelled, |this| {
+                        this.p_2()
+                            .child(div().text_xs().text_color(palette.muted_text).child("CLIP"))
+                            .child(div().text_sm().truncate().child(segment.asset_id.clone()))
+                    }),
             );
             audio = audio.child(
                 div()
-                    .id(gpui::SharedString::from(format!("audio-{id}")))
-                    .w(width)
+                    .w(relative(share))
                     .h_full()
                     .min_w_0()
+                    .overflow_hidden()
                     .border_1()
-                    .border_color(color(&self.theme.border))
-                    .bg(color(&self.theme.panel))
+                    .border_color(palette.border)
+                    .bg(palette.panel)
                     .rounded_sm()
-                    .p_2()
-                    .text_sm()
-                    .text_color(color(&self.theme.muted_text))
-                    .child("◁  Linked audio"),
+                    .when(labelled, |this| {
+                        this.p_2()
+                            .text_sm()
+                            .text_color(palette.muted_text)
+                            .truncate()
+                            .child("◁  Linked audio")
+                    }),
             );
         }
+        let marks = match (self.mark_in, self.mark_out) {
+            (Some(a), Some(b)) => Some((a.min(b), a.max(b))),
+            (Some(a), None) | (None, Some(a)) => Some((a, a)),
+            (None, None) => None,
+        };
         div()
             .flex_1()
             .min_h_0()
@@ -454,24 +469,20 @@ impl Editor {
                     .flex()
                     .gap_2()
                     .items_center()
-                    .child(control("Mark In", &self.theme).on_click(cx.listener(
-                        |this, _, _, cx| {
-                            this.mark_in = Some(this.preview_at_ms);
-                            cx.notify();
-                        },
-                    )))
-                    .child(control("Mark Out", &self.theme).on_click(cx.listener(
-                        |this, _, _, cx| {
-                            this.mark_out = Some(this.preview_at_ms);
-                            cx.notify();
-                        },
-                    )))
                     .child(
-                        control("Remove range", &self.theme)
+                        control("Mark In", &palette)
+                            .on_click(cx.listener(|this, _, _, cx| this.set_mark(false, cx))),
+                    )
+                    .child(
+                        control("Mark Out", &palette)
+                            .on_click(cx.listener(|this, _, _, cx| this.set_mark(true, cx))),
+                    )
+                    .child(
+                        control("Remove range", &palette)
                             .on_click(cx.listener(|this, _, _, cx| this.cut_marks(cx))),
                     )
                     .child(
-                        control("Undo", &self.theme)
+                        control("Undo", &palette)
                             .on_click(cx.listener(|this, _, _, cx| this.undo(cx))),
                     )
                     .child(
@@ -479,7 +490,7 @@ impl Editor {
                             .flex_1()
                             .text_right()
                             .text_sm()
-                            .text_color(color(&self.theme.muted_text))
+                            .text_color(palette.muted_text)
                             .child(format!(
                                 "In {}    Out {}",
                                 self.mark_in.map(time_label).unwrap_or_else(|| "—".into()),
@@ -496,7 +507,7 @@ impl Editor {
                             .w(px(58.0))
                             .flex_none()
                             .text_xs()
-                            .text_color(color(&self.theme.muted_text))
+                            .text_color(palette.muted_text)
                             .child(div().h(px(24.0)).flex().items_center().child("TIME"))
                             .child(div().h(px(52.0)).flex().items_center().child("VIDEO"))
                             .child(div().h(px(52.0)).flex().items_center().child("AUDIO")),
@@ -511,7 +522,7 @@ impl Editor {
                             .rounded_md()
                             .overflow_hidden()
                             .border_1()
-                            .border_color(color(&self.theme.border))
+                            .border_color(palette.border)
                             .child(ruler)
                             .child(video)
                             .child(audio)
@@ -531,24 +542,39 @@ impl Editor {
                                 .left_0()
                                 .right_0(),
                             )
+                            .when_some(marks, |this, (start, end)| {
+                                this.child(
+                                    div()
+                                        .absolute()
+                                        .top_0()
+                                        .bottom_0()
+                                        .left(fraction(start))
+                                        .w(relative((end - start).min(total) as f32 / total as f32))
+                                        .min_w(px(2.0))
+                                        .bg(palette.accent.opacity(0.18))
+                                        .border_l_1()
+                                        .border_r_1()
+                                        .border_color(palette.accent.opacity(0.6)),
+                                )
+                            })
                             .child(
                                 div()
                                     .absolute()
-                                    .left(playhead)
+                                    .left(playhead_at)
                                     .top_0()
                                     .bottom_0()
                                     .w(px(2.0))
-                                    .bg(color(&self.theme.accent)),
+                                    .bg(palette.accent),
                             )
                             .child(
                                 div()
                                     .absolute()
-                                    .left(playhead)
+                                    .left(playhead_at)
                                     .top_0()
                                     .w(px(11.0))
                                     .h(px(11.0))
                                     .rounded_sm()
-                                    .bg(color(&self.theme.accent)),
+                                    .bg(palette.accent),
                             )
                             .on_mouse_down(
                                 MouseButton::Left,
@@ -582,15 +608,51 @@ impl Editor {
 }
 
 impl Render for Editor {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // Frames replaced since the last draw are no longer referenced; free their textures.
+        for image in self.retired_images.drain(..) {
+            let _ = window.drop_image(image);
+        }
+        let playhead = self.playhead_ms();
+        if self.playing {
+            // Keeps the playhead moving at the display's refresh rate.
+            window.request_animation_frame();
+        }
+        self.follow_playhead(playhead);
+        let palette = self.palette;
         let layout = self.config.layout.clone();
-        let workspace = self.render_layout(&layout, Vec::new(), cx);
+        let workspace = self.render_layout(&layout, Vec::new(), playhead, cx);
         div()
+            .id("editor")
+            .track_focus(&self.focus_handle)
+            .key_context("Editor")
+            .on_action(cx.listener(|this, _: &TogglePlay, _, cx| this.toggle_play(cx)))
+            .on_action(cx.listener(|this, _: &StepBack, _, cx| this.seek_by(-1000, cx)))
+            .on_action(cx.listener(|this, _: &StepForward, _, cx| this.seek_by(1000, cx)))
+            .on_action(cx.listener(|this, _: &JumpBack, _, cx| this.seek_by(-5000, cx)))
+            .on_action(cx.listener(|this, _: &JumpForward, _, cx| this.seek_by(5000, cx)))
+            .on_action(cx.listener(|this, _: &GoToStart, _, cx| this.seek(0, cx)))
+            .on_action(cx.listener(|this, _: &GoToEnd, _, cx| {
+                let end = this.last_ms();
+                this.seek(end, cx)
+            }))
+            .on_action(cx.listener(|this, _: &MarkIn, _, cx| this.set_mark(false, cx)))
+            .on_action(cx.listener(|this, _: &MarkOut, _, cx| this.set_mark(true, cx)))
+            .on_action(cx.listener(|this, _: &ClearMarks, _, cx| {
+                this.mark_in = None;
+                this.mark_out = None;
+                cx.notify();
+            }))
+            .on_action(cx.listener(|this, _: &RemoveRange, _, cx| this.cut_marks(cx)))
+            .on_action(cx.listener(|this, _: &Undo, _, cx| this.undo(cx)))
+            .on_drop(cx.listener(|this, paths: &ExternalPaths, _, cx| {
+                this.import_paths(paths.paths().to_vec(), cx);
+            }))
             .size_full()
             .flex()
             .flex_col()
-            .bg(color(&self.theme.background))
-            .text_color(color(&self.theme.text))
+            .bg(palette.background)
+            .text_color(palette.text)
             .child(
                 div()
                     .h(px(58.0))
@@ -612,8 +674,8 @@ impl Render for Editor {
                                     .items_center()
                                     .justify_center()
                                     .rounded_md()
-                                    .bg(color(&self.theme.text))
-                                    .text_color(color(&self.theme.panel))
+                                    .bg(palette.text)
+                                    .text_color(palette.panel)
                                     .font_weight(gpui::FontWeight::BOLD)
                                     .child("C"),
                             )
@@ -630,7 +692,7 @@ impl Render for Editor {
                                     .child(
                                         div()
                                             .text_xs()
-                                            .text_color(color(&self.theme.muted_text))
+                                            .text_color(palette.muted_text)
                                             .child("Local video editor"),
                                     ),
                             ),
@@ -642,7 +704,7 @@ impl Render for Editor {
                             } else {
                                 "Light mode"
                             },
-                            &self.theme,
+                            &palette,
                         )
                         .on_click(cx.listener(|this, _, _, cx| this.toggle_theme(cx))),
                     ),
@@ -655,11 +717,16 @@ impl Render for Editor {
                     .px_4()
                     .flex()
                     .items_center()
+                    .justify_between()
+                    .gap_4()
                     .border_t_1()
-                    .border_color(color(&self.theme.border))
+                    .border_color(palette.border)
                     .text_xs()
-                    .text_color(color(&self.theme.muted_text))
-                    .child(self.status.clone()),
+                    .text_color(palette.muted_text)
+                    .child(div().min_w_0().truncate().child(self.status.clone()))
+                    .child(div().flex_none().child(
+                        "Space play · ←/→ 1s · Shift 5s · I/O marks · Del remove · Ctrl+Z undo",
+                    )),
             )
     }
 }

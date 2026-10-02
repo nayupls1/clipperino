@@ -57,4 +57,23 @@ Set `/custom_theme` in the user config to the theme file path. Relative theme pa
 
 User config lives at `$XDG_CONFIG_HOME/clipperino/config.json`, or `~/.config/clipperino/config.json`. Local models live at `$XDG_DATA_HOME/clipperino/models/`, or `~/.local/share/clipperino/models/`. The project cache and undo history live beside `project.json` in `.clipperino-cache/`.
 
-Preview video uses a 24 fps proxy stream from FFmpeg, with mpv playing the source audio. It is intended for selecting cuts; final export re-encodes from the original media. Playback can briefly pause at a cut between source segments. For precise review, render the project and check the output.
+Preview video streams raw frames from FFmpeg at the source frame rate (capped at 60 fps), scaled to `/preview_width`. One mpv process plays the audio for the whole edited timeline, so cuts play back without gaps, and video frames are timed against that audio. It is intended for selecting cuts; final export re-encodes from the original media. For precise review, render the project and check the output.
+
+## Keyboard shortcuts
+
+| Key | Action |
+| --- | --- |
+| Space or K | Play / pause |
+| ← / → | Back / forward 1 second |
+| Shift+← / Shift+→ | Back / forward 5 seconds |
+| Home / End | Start / end of timeline |
+| I / O | Mark In / Out |
+| Esc | Clear marks |
+| Delete or Backspace | Remove the marked range |
+| Ctrl+Z | Undo |
+
+Video files dropped onto the window are imported.
+
+## Building
+
+`cargo build --release` produces `target/release/clipperino-app` and `target/release/clipperino`. Debug builds still optimize dependencies, but use the release build to judge playback performance.

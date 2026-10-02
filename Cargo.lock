@@ -944,8 +944,11 @@ name = "clipperino-app"
 version = "0.1.0"
 dependencies = [
  "clipperino-core",
+ "futures",
  "gpui",
  "image",
+ "libc",
+ "serde_json",
 ]
 
 [[package]]

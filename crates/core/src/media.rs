@@ -11,7 +11,7 @@ use crate::{
     Result,
     config::AppConfig,
     error,
-    project::{Asset, Project, TranscriptEntry},
+    project::{Asset, Project, ProjectStore, TranscriptEntry},
 };
 
 fn command_output(command: &mut Command) -> Result<std::process::Output> {
@@ -67,6 +67,52 @@ pub fn probe(path: &Path, config: &AppConfig) -> Result<Asset> {
     })
 }
 
+/// Probes and imports a source video, storing its path relative to the project when possible.
+pub fn import(store: &ProjectStore, path: &Path, config: &AppConfig) -> Result<String> {
+    let absolute = fs::canonicalize(path)?;
+    let mut asset = probe(&absolute, config)?;
+    let parent = store
+        .path()
+        .parent()
+        .filter(|path| !path.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    if let Ok(directory) = fs::canonicalize(parent)
+        && let Ok(relative) = absolute.strip_prefix(directory)
+    {
+        asset.path = relative.to_string_lossy().into_owned();
+    }
+    store.update(|project| project.add_asset(asset))
+}
+
+/// Returns the first video stream's frame rate as a `(numerator, denominator)` pair.
+pub fn video_frame_rate(path: &Path, config: &AppConfig) -> Result<(u32, u32)> {
+    let output = command_output(
+        Command::new(&config.ffprobe)
+            .args([
+                "-v",
+                "error",
+                "-select_streams",
+                "v:0",
+                "-show_entries",
+                "stream=avg_frame_rate,r_frame_rate",
+                "-of",
+                "json",
+            ])
+            .arg(path),
+    )?;
+    let data: Value = serde_json::from_slice(&output.stdout)?;
+    let stream = &data["streams"][0];
+    ["avg_frame_rate", "r_frame_rate"]
+        .into_iter()
+        .filter_map(|key| stream[key].as_str())
+        .find_map(|rate| {
+            let (num, den) = rate.split_once('/')?;
+            let (num, den) = (num.parse::<u32>().ok()?, den.parse::<u32>().ok()?);
+            (num > 0 && den > 0).then_some((num, den))
+        })
+        .ok_or_else(|| error("cannot determine video frame rate"))
+}
+
 pub fn asset_path(project_path: &Path, asset: &Asset) -> PathBuf {
     let path = Path::new(&asset.path);
     if path.is_absolute() {
@@ -90,7 +136,7 @@ pub fn frame(input: &Path, at_ms: u64, output: &Path, config: &AppConfig) -> Res
             .arg("-i")
             .arg(input)
             .args(["-frames:v", "1", "-vf"])
-            .arg(format!("scale={}: -2", config.preview_width).replace(" ", ""))
+            .arg(format!("scale={}:-2", config.preview_width))
             .arg(output),
     )?;
     Ok(())
