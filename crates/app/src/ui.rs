@@ -118,12 +118,7 @@ impl Editor {
             .border_color(palette.border)
             .cursor_move()
             .child(title)
-            .child(
-                div()
-                    .text_color(palette.muted_text)
-                    .font_weight(gpui::FontWeight::NORMAL)
-                    .child("⋮⋮"),
-            )
+            .child(Icon::Grip.element().text_color(palette.muted_text))
             .on_drag(PanelDrag(panel), move |_, _, _, cx| {
                 cx.new(move |_| DragGhost(title))
             });
@@ -161,32 +156,30 @@ impl Editor {
 
     fn assets_panel(&self, cx: &mut Context<Self>) -> gpui::AnyElement {
         let palette = self.palette;
-        let mut body = div().id("asset-list").flex_1().overflow_y_scroll().p_3();
+        let mut body = div()
+            .id("asset-list")
+            .flex_1()
+            .overflow_y_scroll()
+            .p_3()
+            .flex()
+            .flex_col()
+            .gap_2();
         body = body.child(
-            primary_control("+ Import videos", &palette)
-                .id("import-button")
+            primary_button("import-button", Some(Icon::Plus), "Import videos", &palette)
                 .w_full()
-                .mb_3()
-                .on_click(cx.listener(|_, _, _, cx| {
-                    let answer = cx.prompt_for_paths(PathPromptOptions {
-                        files: true,
-                        directories: false,
-                        multiple: true,
-                        prompt: Some("Import video".into()),
-                    });
-                    cx.spawn(async move |this, cx| {
-                        if let Ok(Ok(Some(paths))) = answer.await {
-                            let _ = this.update(cx, |this, cx| this.import_paths(paths, cx));
-                        }
-                    })
-                    .detach();
-                })),
+                .on_click(cx.listener(|this, _, _, cx| this.prompt_import(cx))),
         );
         if self.config.model_path.is_none() {
             body = body.child(
-                control("Download English model", &palette)
-                    .mb_2()
-                    .on_click(cx.listener(|this, _, _, cx| this.download_model(cx))),
+                button(
+                    "download-model",
+                    Some(Icon::Download),
+                    "Download model",
+                    &palette,
+                )
+                .w_full()
+                .tooltip(tooltip("Download the English transcription model", palette))
+                .on_click(cx.listener(|this, _, _, cx| this.download_model(cx))),
             );
         }
         body = body.child(
@@ -194,13 +187,17 @@ impl Editor {
                 .flex()
                 .flex_col()
                 .gap_2()
-                .mb_4()
+                .mb_2()
                 .child(
-                    control("Transcribe selected", &palette)
+                    button("transcribe", Some(Icon::Mic), "Transcribe", &palette)
+                        .w_full()
+                        .tooltip(tooltip("Transcribe the selected video", palette))
                         .on_click(cx.listener(|this, _, _, cx| this.transcribe_selected(cx))),
                 )
                 .child(
-                    control("Auto cut selected", &palette)
+                    button("auto-cut", Some(Icon::Sparkles), "Auto cut", &palette)
+                        .w_full()
+                        .tooltip(tooltip("Remove pauses from the selected video", palette))
                         .on_click(cx.listener(|this, _, _, cx| this.auto_cut_selected(cx))),
                 ),
         );
@@ -214,39 +211,49 @@ impl Editor {
         }
         for asset in &self.project.assets {
             let id = asset.id.clone();
-            let label = file_label(Path::new(&asset.path));
+            let selected = self.selected_asset.as_deref() == Some(&id);
             body = body.child(
                 div()
                     .id(SharedString::from(format!("asset-{id}")))
-                    .h(px(56.0))
+                    .h(px(52.0))
                     .flex()
+                    .flex_none()
                     .items_center()
-                    .justify_between()
+                    .gap_3()
                     .px_3()
-                    .mb_2()
                     .border_1()
                     .border_color(palette.border)
                     .rounded_md()
                     .cursor_pointer()
-                    .when(self.selected_asset.as_deref() == Some(&id), |this| {
+                    .when(selected, |this| {
                         this.bg(palette.selected).border_color(palette.accent)
                     })
                     .hover(|this| this.bg(palette.selected))
+                    .child(Icon::Film.element().text_color(if selected {
+                        palette.accent
+                    } else {
+                        palette.muted_text
+                    }))
                     .child(
                         div()
                             .min_w_0()
+                            .flex_1()
                             .flex()
                             .flex_col()
-                            .gap_1()
-                            .child(div().text_sm().truncate().child(label))
+                            .child(
+                                div()
+                                    .text_sm()
+                                    .truncate()
+                                    .child(file_label(Path::new(&asset.path))),
+                            )
                             .child(
                                 div()
                                     .text_xs()
+                                    .truncate()
                                     .text_color(palette.muted_text)
                                     .child(format!("{} · {}", id, time_label(asset.duration_ms))),
                             ),
                     )
-                    .child(div().text_color(palette.muted_text).child("›"))
                     .on_click(cx.listener(move |this, _, _, cx| {
                         this.select_asset(id.clone());
                         this.seek_source(&id, 0, cx);
@@ -267,11 +274,23 @@ impl Editor {
             div()
                 .size_full()
                 .flex()
+                .flex_col()
+                .gap_2()
                 .justify_center()
                 .items_center()
-                .text_color(palette.muted_text)
+                .text_color(rgb(0xa1a1aa))
+                .child(Icon::Film.element().size_6())
                 .child("Import a video to begin")
                 .into_any_element()
+        };
+        let timecode = |text: String| {
+            div()
+                .w(px(110.0))
+                .flex_none()
+                .text_sm()
+                .font_family("monospace")
+                .text_color(palette.muted_text)
+                .child(text)
         };
         div()
             .flex_1()
@@ -295,33 +314,71 @@ impl Editor {
                     .flex_none()
                     .flex()
                     .items_center()
-                    .gap_2()
                     .px_3()
-                    .child(
-                        primary_control(if self.playing { "Pause" } else { "Play" }, &palette)
-                            .w(px(72.0))
-                            .on_click(cx.listener(|this, _, _, cx| this.toggle_play(cx))),
-                    )
-                    .child(
-                        control("−1s", &palette)
-                            .on_click(cx.listener(|this, _, _, cx| this.seek_by(-1000, cx))),
-                    )
-                    .child(
-                        control("+1s", &palette)
-                            .on_click(cx.listener(|this, _, _, cx| this.seek_by(1000, cx))),
-                    )
+                    .child(timecode(time_label(playhead)).text_color(palette.text))
                     .child(
                         div()
                             .flex_1()
-                            .text_right()
-                            .text_sm()
-                            .text_color(palette.muted_text)
-                            .child(format!(
-                                "{} / {}",
-                                time_label(playhead),
-                                time_label(self.project.duration_ms())
-                            )),
-                    ),
+                            .flex()
+                            .justify_center()
+                            .items_center()
+                            .gap_1()
+                            .child(
+                                icon_button(
+                                    "go-start",
+                                    Icon::SkipBack,
+                                    "Go to start  (Home)",
+                                    &palette,
+                                )
+                                .on_click(cx.listener(|this, _, _, cx| this.seek(0, cx))),
+                            )
+                            .child(
+                                icon_button("back", Icon::ChevronLeft, "Back 1 s  (←)", &palette)
+                                    .on_click(
+                                        cx.listener(|this, _, _, cx| this.seek_by(-1000, cx)),
+                                    ),
+                            )
+                            .child(
+                                primary_button(
+                                    "play",
+                                    Some(if self.playing {
+                                        Icon::Pause
+                                    } else {
+                                        Icon::Play
+                                    }),
+                                    "",
+                                    &palette,
+                                )
+                                .w(px(44.0))
+                                .rounded_full()
+                                .tooltip(tooltip("Play / pause  (Space)", palette))
+                                .on_click(cx.listener(|this, _, _, cx| this.toggle_play(cx))),
+                            )
+                            .child(
+                                icon_button(
+                                    "forward",
+                                    Icon::ChevronRight,
+                                    "Forward 1 s  (→)",
+                                    &palette,
+                                )
+                                .on_click(cx.listener(|this, _, _, cx| this.seek_by(1000, cx))),
+                            )
+                            .child(
+                                icon_button(
+                                    "go-end",
+                                    Icon::SkipForward,
+                                    "Go to end  (End)",
+                                    &palette,
+                                )
+                                .on_click(cx.listener(
+                                    |this, _, _, cx| {
+                                        let end = this.last_ms();
+                                        this.seek(end, cx)
+                                    },
+                                )),
+                            ),
+                    )
+                    .child(timecode(time_label(self.project.duration_ms())).text_right()),
             )
             .into_any_element()
     }
@@ -335,11 +392,17 @@ impl Editor {
                 .child(
                     div()
                         .p_4()
+                        .flex()
+                        .flex_col()
+                        .items_center()
+                        .gap_2()
                         .rounded_md()
                         .border_1()
                         .border_color(palette.border)
+                        .text_sm()
                         .text_color(palette.muted_text)
-                        .child("Transcribe the selected asset to see its text here."),
+                        .child(Icon::Text.element().size_5())
+                        .child("Transcribe the selected video to see its text here."),
                 )
                 .into_any_element();
         }
@@ -387,223 +450,410 @@ impl Editor {
         div().flex_1().min_h_0().child(passages).into_any_element()
     }
 
+    fn timeline_toolbar(&self, cx: &mut Context<Self>) -> gpui::Div {
+        let palette = self.palette;
+        let separator = || div().w(px(1.0)).h(px(20.0)).mx_1().bg(palette.border);
+        let has_selection = !self.selected_segments.is_empty()
+            || (self.mark_in.is_some() && self.mark_out.is_some());
+        div()
+            .flex()
+            .items_center()
+            .gap_1()
+            .child(
+                button("split", Some(Icon::Scissors), "Split", &palette)
+                    .tooltip(tooltip("Split the clip at the playhead  (S)", palette))
+                    .on_click(cx.listener(|this, _, _, cx| this.split(cx))),
+            )
+            .child(
+                icon_button(
+                    "trim-left",
+                    Icon::TrimLeft,
+                    "Delete the clip's part before the playhead  (Q)",
+                    &palette,
+                )
+                .on_click(cx.listener(|this, _, _, cx| this.trim(true, cx))),
+            )
+            .child(
+                icon_button(
+                    "trim-right",
+                    Icon::TrimRight,
+                    "Delete the clip's part after the playhead  (W)",
+                    &palette,
+                )
+                .on_click(cx.listener(|this, _, _, cx| this.trim(false, cx))),
+            )
+            .child(
+                icon_button(
+                    "delete",
+                    Icon::Trash,
+                    "Delete selected clips or the In/Out range  (Delete)",
+                    &palette,
+                )
+                .when(!has_selection, |this| this.opacity(0.4))
+                .on_click(cx.listener(|this, _, _, cx| this.delete(cx))),
+            )
+            .child(separator())
+            .child(
+                icon_button("undo", Icon::Undo, "Undo  (Ctrl+Z)", &palette)
+                    .on_click(cx.listener(|this, _, _, cx| this.undo(cx))),
+            )
+            .child(
+                icon_button("redo", Icon::Redo, "Redo  (Ctrl+Shift+Z)", &palette)
+                    .on_click(cx.listener(|this, _, _, cx| this.redo(cx))),
+            )
+            .child(separator())
+            .child(
+                icon_button("mark-in", Icon::Flag, "Mark In  (I)", &palette)
+                    .on_click(cx.listener(|this, _, _, cx| this.set_mark(false, cx))),
+            )
+            .child(
+                icon_button("mark-out", Icon::FlagEnd, "Mark Out  (O)", &palette)
+                    .on_click(cx.listener(|this, _, _, cx| this.set_mark(true, cx))),
+            )
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .truncate()
+                    .text_right()
+                    .pr_2()
+                    .text_xs()
+                    .text_color(palette.muted_text)
+                    .child(self.selection_summary()),
+            )
+            .child(
+                icon_button("zoom-out", Icon::ZoomOut, "Zoom out  (-)", &palette).on_click(
+                    cx.listener(|this, _, _, cx| {
+                        let at = this.playhead_ms();
+                        this.zoom_by(1.0 / 1.5, at, cx)
+                    }),
+                ),
+            )
+            .child(
+                icon_button(
+                    "zoom-fit",
+                    Icon::ZoomFit,
+                    "Fit timeline  (Shift+Z)",
+                    &palette,
+                )
+                .on_click(cx.listener(|this, _, _, cx| this.zoom_to_fit(cx))),
+            )
+            .child(
+                icon_button(
+                    "zoom-in",
+                    Icon::ZoomIn,
+                    "Zoom in  (+, or Ctrl+scroll)",
+                    &palette,
+                )
+                .on_click(cx.listener(|this, _, _, cx| {
+                    let at = this.playhead_ms();
+                    this.zoom_by(1.5, at, cx)
+                })),
+            )
+    }
+
+    fn selection_summary(&self) -> String {
+        let marks = match (self.mark_in, self.mark_out) {
+            (None, None) => String::new(),
+            (start, end) => format!(
+                "In {}  Out {}",
+                start.map(time_label).unwrap_or_else(|| "—".into()),
+                end.map(time_label).unwrap_or_else(|| "—".into())
+            ),
+        };
+        match self.selected_segments.len() {
+            0 => marks,
+            1 => "1 clip selected".into(),
+            count => format!("{count} clips selected"),
+        }
+    }
+
     fn timeline_panel(&self, playhead: u64, cx: &mut Context<Self>) -> gpui::AnyElement {
         let palette = self.palette;
         let total = self.project.duration_ms().max(1);
-        let fraction = |ms: u64| relative(ms.min(total) as f32 / total as f32);
-        let playhead_at = fraction(playhead);
-        let timeline_bounds = self.timeline_bounds.clone();
-        let track_width = self.timeline_bounds.get().1;
+        let width = self.timeline_bounds.get().width;
+        let content = self.content_width();
+        let to_x = |ms: u64| self.ms_to_x(ms);
+        let visible_ms = |x: f32| x >= -1.0 && x <= width + 1.0;
+
+        // Ruler ticks at a spacing that stays readable at any zoom.
+        let ms_per_px = total as f32 / content.max(1.0);
+        let step = [
+            100, 250, 500, 1_000, 2_000, 5_000, 10_000, 15_000, 30_000, 60_000, 120_000, 300_000,
+            600_000, 1_800_000,
+        ]
+        .into_iter()
+        .find(|step| *step as f32 / ms_per_px >= 90.0)
+        .unwrap_or(3_600_000);
+        let first_tick = (self.x_to_ms_offset(0.0) / step) * step;
         let mut ruler = div()
-            .h(px(24.0))
+            .h(px(RULER_HEIGHT))
             .relative()
             .border_b_1()
             .border_color(palette.border);
-        for step in 0..4 {
-            let at = total * step / 4;
+        let mut tick = first_tick;
+        while tick <= total && to_x(tick) <= width {
+            let x = to_x(tick);
             ruler = ruler.child(
                 div()
                     .absolute()
-                    .left(relative(step as f32 / 4.0))
-                    .top(px(4.0))
+                    .left(px(x))
+                    .top_0()
+                    .bottom_0()
+                    .border_l_1()
+                    .border_color(palette.border)
                     .pl_1()
+                    .pt(px(4.0))
                     .text_xs()
                     .text_color(palette.muted_text)
-                    .child(time_label(at)),
+                    .child(ruler_label(tick, step)),
             );
+            tick += step;
         }
-        let mut video = div().h(px(52.0)).flex().min_w_0().bg(palette.background);
-        let mut audio = div().h(px(52.0)).flex().min_w_0().bg(palette.background);
+
+        let lane = || div().h(px(LANE_HEIGHT)).relative().bg(palette.background);
+        let (mut video, mut audio) = (lane(), lane());
+        let mut position = 0;
         for segment in &self.project.segments {
-            let share = segment.duration_ms() as f32 / total as f32;
-            let labelled = share * track_width >= MIN_LABELLED_SEGMENT_PX;
-            video = video.child(
+            let start = position;
+            position += segment.duration_ms();
+            let (left, right) = (to_x(start), to_x(position));
+            if right < 0.0 || left > width {
+                continue;
+            }
+            let clip_width = (right - left - 2.0).max(1.0);
+            let selected = self.selected_segments.contains(&segment.id);
+            let labelled = clip_width >= MIN_LABELLED_SEGMENT_PX;
+            let name = self
+                .project
+                .asset(&segment.asset_id)
+                .map(|asset| file_label(Path::new(&asset.path)))
+                .unwrap_or_else(|_| segment.asset_id.clone());
+            let clip = |accent: Hsla| {
                 div()
-                    .w(relative(share))
-                    .h_full()
-                    .min_w_0()
+                    .absolute()
+                    .top(px(4.0))
+                    .bottom(px(4.0))
+                    .left(px(left + 1.0))
+                    .w(px(clip_width))
                     .overflow_hidden()
+                    .rounded_md()
                     .border_1()
-                    .border_color(palette.accent)
-                    .bg(palette.selected)
-                    .rounded_sm()
-                    .when(labelled, |this| {
-                        this.p_2()
-                            .child(div().text_xs().text_color(palette.muted_text).child("CLIP"))
-                            .child(div().text_sm().truncate().child(segment.asset_id.clone()))
-                    }),
-            );
-            audio = audio.child(
-                div()
-                    .w(relative(share))
-                    .h_full()
-                    .min_w_0()
-                    .overflow_hidden()
-                    .border_1()
-                    .border_color(palette.border)
-                    .bg(palette.panel)
-                    .rounded_sm()
-                    .when(labelled, |this| {
-                        this.p_2()
-                            .text_sm()
-                            .text_color(palette.muted_text)
-                            .truncate()
-                            .child("◁  Linked audio")
-                    }),
-            );
+                    .when(selected, |this| this.border_2())
+                    .border_color(if selected { palette.text } else { accent })
+                    .bg(accent.opacity(if selected { 0.45 } else { 0.22 }))
+            };
+            video = video.child(clip(palette.accent).when(labelled, |this| {
+                this.flex()
+                    .items_center()
+                    .gap_2()
+                    .px_2()
+                    .child(Icon::Film.element().text_color(palette.text))
+                    .child(
+                        div()
+                            .min_w_0()
+                            .flex()
+                            .flex_col()
+                            .child(div().text_xs().truncate().child(name))
+                            .when(clip_width >= 110.0, |this| {
+                                this.child(
+                                    div()
+                                        .text_xs()
+                                        .truncate()
+                                        .text_color(palette.muted_text)
+                                        .child(duration_label(segment.duration_ms())),
+                                )
+                            }),
+                    )
+            }));
+            audio = audio.child(clip(palette.muted_text).when(labelled, |this| {
+                this.flex()
+                    .items_center()
+                    .px_2()
+                    .child(Icon::AudioLines.element().text_color(palette.muted_text))
+            }));
         }
+
         let marks = match (self.mark_in, self.mark_out) {
             (Some(a), Some(b)) => Some((a.min(b), a.max(b))),
             (Some(a), None) | (None, Some(a)) => Some((a, a)),
             (None, None) => None,
         };
+        let playhead_x = to_x(playhead);
+        let timeline_bounds = self.timeline_bounds.clone();
+        let lane_label = |icon: Icon, text: &'static str| {
+            div()
+                .h(px(LANE_HEIGHT))
+                .flex()
+                .items_center()
+                .gap_1()
+                .child(icon.element().size_3p5())
+                .child(text)
+        };
+        let track =
+            div()
+                .id("timeline-track")
+                .relative()
+                .flex_1()
+                .min_w_0()
+                .cursor_pointer()
+                .rounded_md()
+                .overflow_hidden()
+                .border_1()
+                .border_color(palette.border)
+                .child(ruler)
+                .child(video)
+                .child(audio)
+                .child(
+                    canvas(
+                        move |bounds, _, _| {
+                            timeline_bounds.set(TrackBounds {
+                                left: f32::from(bounds.origin.x),
+                                top: f32::from(bounds.origin.y),
+                                width: f32::from(bounds.size.width),
+                            });
+                        },
+                        |_, _, _, _| {},
+                    )
+                    .absolute()
+                    .top_0()
+                    .bottom_0()
+                    .left_0()
+                    .right_0(),
+                )
+                .when_some(marks, |this, (start, end)| {
+                    let left = to_x(start);
+                    this.child(
+                        div()
+                            .absolute()
+                            .top_0()
+                            .bottom_0()
+                            .left(px(left))
+                            .w(px((to_x(end) - left).max(2.0)))
+                            .bg(palette.accent.opacity(0.15))
+                            .border_l_2()
+                            .border_r_2()
+                            .border_color(palette.accent),
+                    )
+                })
+                .when(visible_ms(playhead_x), |this| {
+                    this.child(
+                        div()
+                            .absolute()
+                            .left(px(playhead_x - 1.0))
+                            .top_0()
+                            .bottom_0()
+                            .w(px(2.0))
+                            .bg(palette.accent),
+                    )
+                    .child(
+                        div()
+                            .absolute()
+                            .left(px(playhead_x - 6.0))
+                            .top_0()
+                            .w(px(12.0))
+                            .h(px(12.0))
+                            .rounded_b_md()
+                            .bg(palette.accent),
+                    )
+                })
+                .on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(|this, event: &MouseDownEvent, window, cx| {
+                        window.focus(&this.focus_handle);
+                        this.begin_scrub(event.position, event.modifiers, cx);
+                    }),
+                )
+                .on_mouse_move(cx.listener(|this, event: &MouseMoveEvent, _, cx| {
+                    if this.scrubbing && event.dragging() {
+                        this.scrub_to(f32::from(event.position.x), cx);
+                    }
+                }))
+                .on_mouse_up(
+                    MouseButton::Left,
+                    cx.listener(|this, _, _, cx| this.finish_scrub(cx)),
+                )
+                .on_mouse_up_out(
+                    MouseButton::Left,
+                    cx.listener(|this, _, _, cx| this.finish_scrub(cx)),
+                )
+                .on_scroll_wheel(cx.listener(|this, event: &ScrollWheelEvent, _, cx| {
+                    this.scroll_timeline(event, cx)
+                }))
+                .on_drag(TimelineDrag, |_, _, _, cx| cx.new(|_| TimelineGhost))
+                .on_drag_move(
+                    cx.listener(|this, event: &DragMoveEvent<TimelineDrag>, _, cx| {
+                        this.scrub_to(f32::from(event.event.position.x), cx);
+                    }),
+                );
+
+        // A thin overview bar showing which part of a zoomed timeline is in view.
+        let overview = (self.zoom > 1.0).then(|| {
+            div().ml(px(66.0)).h(px(4.0)).relative().child(
+                div()
+                    .absolute()
+                    .top_0()
+                    .bottom_0()
+                    .left(relative(self.scroll_px / content.max(1.0)))
+                    .w(relative(1.0 / self.zoom))
+                    .rounded_full()
+                    .bg(palette.muted_text.opacity(0.5)),
+            )
+        });
+
         div()
             .flex_1()
             .min_h_0()
             .flex()
             .flex_col()
             .p_3()
-            .gap_3()
-            .child(
-                div()
-                    .flex()
-                    .gap_2()
-                    .items_center()
-                    .child(
-                        control("Mark In", &palette)
-                            .on_click(cx.listener(|this, _, _, cx| this.set_mark(false, cx))),
-                    )
-                    .child(
-                        control("Mark Out", &palette)
-                            .on_click(cx.listener(|this, _, _, cx| this.set_mark(true, cx))),
-                    )
-                    .child(
-                        control("Remove range", &palette)
-                            .on_click(cx.listener(|this, _, _, cx| this.cut_marks(cx))),
-                    )
-                    .child(
-                        control("Undo", &palette)
-                            .on_click(cx.listener(|this, _, _, cx| this.undo(cx))),
-                    )
-                    .child(
-                        div()
-                            .flex_1()
-                            .text_right()
-                            .text_sm()
-                            .text_color(palette.muted_text)
-                            .child(format!(
-                                "In {}    Out {}",
-                                self.mark_in.map(time_label).unwrap_or_else(|| "—".into()),
-                                self.mark_out.map(time_label).unwrap_or_else(|| "—".into())
-                            )),
-                    ),
-            )
+            .gap_2()
+            .child(self.timeline_toolbar(cx))
             .child(
                 div()
                     .flex()
                     .min_w_0()
                     .child(
                         div()
-                            .w(px(58.0))
+                            .w(px(66.0))
                             .flex_none()
                             .text_xs()
                             .text_color(palette.muted_text)
-                            .child(div().h(px(24.0)).flex().items_center().child("TIME"))
-                            .child(div().h(px(52.0)).flex().items_center().child("VIDEO"))
-                            .child(div().h(px(52.0)).flex().items_center().child("AUDIO")),
+                            .child(div().h(px(RULER_HEIGHT)))
+                            .child(lane_label(Icon::Film, "Video"))
+                            .child(lane_label(Icon::AudioLines, "Audio")),
                     )
-                    .child(
-                        div()
-                            .id("timeline-track")
-                            .relative()
-                            .flex_1()
-                            .min_w_0()
-                            .cursor_pointer()
-                            .rounded_md()
-                            .overflow_hidden()
-                            .border_1()
-                            .border_color(palette.border)
-                            .child(ruler)
-                            .child(video)
-                            .child(audio)
-                            .child(
-                                canvas(
-                                    move |bounds, _, _| {
-                                        timeline_bounds.set((
-                                            f32::from(bounds.origin.x),
-                                            f32::from(bounds.size.width),
-                                        ));
-                                    },
-                                    |_, _, _, _| {},
-                                )
-                                .absolute()
-                                .top_0()
-                                .bottom_0()
-                                .left_0()
-                                .right_0(),
-                            )
-                            .when_some(marks, |this, (start, end)| {
-                                this.child(
-                                    div()
-                                        .absolute()
-                                        .top_0()
-                                        .bottom_0()
-                                        .left(fraction(start))
-                                        .w(relative((end - start).min(total) as f32 / total as f32))
-                                        .min_w(px(2.0))
-                                        .bg(palette.accent.opacity(0.18))
-                                        .border_l_1()
-                                        .border_r_1()
-                                        .border_color(palette.accent.opacity(0.6)),
-                                )
-                            })
-                            .child(
-                                div()
-                                    .absolute()
-                                    .left(playhead_at)
-                                    .top_0()
-                                    .bottom_0()
-                                    .w(px(2.0))
-                                    .bg(palette.accent),
-                            )
-                            .child(
-                                div()
-                                    .absolute()
-                                    .left(playhead_at)
-                                    .top_0()
-                                    .w(px(11.0))
-                                    .h(px(11.0))
-                                    .rounded_sm()
-                                    .bg(palette.accent),
-                            )
-                            .on_mouse_down(
-                                MouseButton::Left,
-                                cx.listener(|this, event: &MouseDownEvent, _, cx| {
-                                    this.begin_scrub(f32::from(event.position.x), cx);
-                                }),
-                            )
-                            .on_mouse_move(cx.listener(|this, event: &MouseMoveEvent, _, cx| {
-                                if this.scrubbing && event.dragging() {
-                                    this.scrub_to(f32::from(event.position.x), cx);
-                                }
-                            }))
-                            .on_mouse_up(
-                                MouseButton::Left,
-                                cx.listener(|this, _, _, cx| this.finish_scrub(cx)),
-                            )
-                            .on_mouse_up_out(
-                                MouseButton::Left,
-                                cx.listener(|this, _, _, cx| this.finish_scrub(cx)),
-                            )
-                            .on_drag(TimelineDrag, |_, _, _, cx| cx.new(|_| TimelineGhost))
-                            .on_drag_move(cx.listener(
-                                |this, event: &DragMoveEvent<TimelineDrag>, _, cx| {
-                                    this.scrub_to(f32::from(event.event.position.x), cx);
-                                },
-                            )),
-                    ),
+                    .child(track),
             )
+            .children(overview)
             .into_any_element()
+    }
+
+    /// The timeline moment at a horizontal offset inside the visible track.
+    fn x_to_ms_offset(&self, x: f32) -> u64 {
+        let content = self.content_width();
+        if content <= 0.0 {
+            return 0;
+        }
+        (((x + self.scroll_px) / content).clamp(0.0, 1.0) * self.project.duration_ms() as f32)
+            as u64
+    }
+}
+
+fn duration_label(ms: u64) -> String {
+    if ms < 60_000 {
+        format!("{:.1}s", ms as f64 / 1000.0)
+    } else {
+        format!("{}m {:02}s", ms / 60_000, (ms / 1000) % 60)
+    }
+}
+
+fn ruler_label(ms: u64, step: u64) -> String {
+    let (minutes, seconds) = (ms / 60_000, (ms / 1000) % 60);
+    if step < 1_000 {
+        format!("{minutes}:{seconds:02}.{}", (ms % 1000) / 100)
+    } else {
+        format!("{minutes}:{seconds:02}")
     }
 }
 
@@ -617,11 +867,14 @@ impl Render for Editor {
         if self.playing {
             // Keeps the playhead moving at the display's refresh rate.
             window.request_animation_frame();
+            self.keep_playhead_visible(playhead);
         }
+        self.clamp_scroll();
         self.follow_playhead(playhead);
         let palette = self.palette;
         let layout = self.config.layout.clone();
         let workspace = self.render_layout(&layout, Vec::new(), playhead, cx);
+        let dark = self.config.theme != "light";
         div()
             .id("editor")
             .track_focus(&self.focus_handle)
@@ -631,6 +884,10 @@ impl Render for Editor {
             .on_action(cx.listener(|this, _: &StepForward, _, cx| this.seek_by(1000, cx)))
             .on_action(cx.listener(|this, _: &JumpBack, _, cx| this.seek_by(-5000, cx)))
             .on_action(cx.listener(|this, _: &JumpForward, _, cx| this.seek_by(5000, cx)))
+            .on_action(cx.listener(|this, _: &PrevFrame, _, cx| this.seek_by(-FRAME_MS, cx)))
+            .on_action(cx.listener(|this, _: &NextFrame, _, cx| this.seek_by(FRAME_MS, cx)))
+            .on_action(cx.listener(|this, _: &PrevEdit, _, cx| this.jump_to_edit(false, cx)))
+            .on_action(cx.listener(|this, _: &NextEdit, _, cx| this.jump_to_edit(true, cx)))
             .on_action(cx.listener(|this, _: &GoToStart, _, cx| this.seek(0, cx)))
             .on_action(cx.listener(|this, _: &GoToEnd, _, cx| {
                 let end = this.last_ms();
@@ -638,13 +895,24 @@ impl Render for Editor {
             }))
             .on_action(cx.listener(|this, _: &MarkIn, _, cx| this.set_mark(false, cx)))
             .on_action(cx.listener(|this, _: &MarkOut, _, cx| this.set_mark(true, cx)))
-            .on_action(cx.listener(|this, _: &ClearMarks, _, cx| {
-                this.mark_in = None;
-                this.mark_out = None;
-                cx.notify();
-            }))
-            .on_action(cx.listener(|this, _: &RemoveRange, _, cx| this.cut_marks(cx)))
+            .on_action(cx.listener(|this, _: &ClearSelection, _, cx| this.clear_selection(cx)))
+            .on_action(cx.listener(|this, _: &Split, _, cx| this.split(cx)))
+            .on_action(cx.listener(|this, _: &TrimLeft, _, cx| this.trim(true, cx)))
+            .on_action(cx.listener(|this, _: &TrimRight, _, cx| this.trim(false, cx)))
+            .on_action(cx.listener(|this, _: &Delete, _, cx| this.delete(cx)))
             .on_action(cx.listener(|this, _: &Undo, _, cx| this.undo(cx)))
+            .on_action(cx.listener(|this, _: &Redo, _, cx| this.redo(cx)))
+            .on_action(cx.listener(|this, _: &ZoomIn, _, cx| {
+                let at = this.playhead_ms();
+                this.zoom_by(1.5, at, cx)
+            }))
+            .on_action(cx.listener(|this, _: &ZoomOut, _, cx| {
+                let at = this.playhead_ms();
+                this.zoom_by(1.0 / 1.5, at, cx)
+            }))
+            .on_action(cx.listener(|this, _: &ZoomFit, _, cx| this.zoom_to_fit(cx)))
+            .on_action(cx.listener(|this, _: &Import, _, cx| this.prompt_import(cx)))
+            .on_action(cx.listener(|this, _: &Export, _, cx| this.prompt_export(cx)))
             .on_drop(cx.listener(|this, paths: &ExternalPaths, _, cx| {
                 this.import_paths(paths.paths().to_vec(), cx);
             }))
@@ -668,16 +936,13 @@ impl Render for Editor {
                             .gap_3()
                             .child(
                                 div()
-                                    .w(px(28.0))
-                                    .h(px(28.0))
+                                    .size(px(28.0))
                                     .flex()
                                     .items_center()
                                     .justify_center()
                                     .rounded_md()
-                                    .bg(palette.text)
-                                    .text_color(palette.panel)
-                                    .font_weight(gpui::FontWeight::BOLD)
-                                    .child("C"),
+                                    .bg(palette.accent)
+                                    .child(Icon::Scissors.element().text_color(rgb(0xffffff))),
                             )
                             .child(
                                 div()
@@ -693,20 +958,40 @@ impl Render for Editor {
                                         div()
                                             .text_xs()
                                             .text_color(palette.muted_text)
-                                            .child("Local video editor"),
+                                            .child(file_label(self.store.path())),
                                     ),
                             ),
                     )
                     .child(
-                        control(
-                            if self.config.theme == "light" {
-                                "Dark mode"
-                            } else {
-                                "Light mode"
-                            },
-                            &palette,
-                        )
-                        .on_click(cx.listener(|this, _, _, cx| this.toggle_theme(cx))),
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap_2()
+                            .child(
+                                button("header-import", Some(Icon::Plus), "Import", &palette)
+                                    .tooltip(tooltip("Import videos  (Ctrl+I)", palette))
+                                    .on_click(cx.listener(|this, _, _, cx| this.prompt_import(cx))),
+                            )
+                            .child(
+                                primary_button(
+                                    "header-export",
+                                    Some(Icon::Export),
+                                    if self.exporting { "Exporting…" } else { "Export" },
+                                    &palette,
+                                )
+                                .when(self.exporting, |this| this.opacity(0.6))
+                                .tooltip(tooltip("Render the edit to a video file  (Ctrl+E)", palette))
+                                .on_click(cx.listener(|this, _, _, cx| this.prompt_export(cx))),
+                            )
+                            .child(
+                                icon_button(
+                                    "theme",
+                                    if dark { Icon::Sun } else { Icon::Moon },
+                                    if dark { "Light mode" } else { "Dark mode" },
+                                    &palette,
+                                )
+                                .on_click(cx.listener(|this, _, _, cx| this.toggle_theme(cx))),
+                            ),
                     ),
             )
             .child(div().flex_1().min_h_0().child(workspace))
@@ -725,7 +1010,7 @@ impl Render for Editor {
                     .text_color(palette.muted_text)
                     .child(div().min_w_0().truncate().child(self.status.clone()))
                     .child(div().flex_none().child(
-                        "Space play · ←/→ 1s · Shift 5s · I/O marks · Del remove · Ctrl+Z undo",
+                        "Space play · S split · Q/W delete left/right · Click clip + Del · Ctrl+Z undo",
                     )),
             )
     }

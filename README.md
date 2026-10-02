@@ -43,7 +43,9 @@ clipperino frame --at-ms 1200 --output /tmp/frame.png
 clipperino frame --asset asset-1 --at-ms 1200 --output /tmp/source-frame.png
 clipperino contact-sheet asset-1 --every-ms 5000 --output /tmp/contact.png
 clipperino cut 2500 3200
+clipperino split 4000
 clipperino undo
+clipperino redo
 clipperino project get /settings
 clipperino project set /settings/silence_min_ms 900
 clipperino config show
@@ -59,6 +61,12 @@ User config lives at `$XDG_CONFIG_HOME/clipperino/config.json`, or `~/.config/cl
 
 Preview video streams raw frames from FFmpeg at the source frame rate (capped at 60 fps), scaled to `/preview_width`. One mpv process plays the audio for the whole edited timeline, so cuts play back without gaps, and video frames are timed against that audio. It is intended for selecting cuts; final export re-encodes from the original media. For precise review, render the project and check the output.
 
+## Editing
+
+Editing works like most video editors. Press **S** to split the clip under the playhead, then click the piece you don't want and press **Delete**; the rest of the timeline closes the gap. **Q** and **W** delete the part of the current clip before or after the playhead in one step. Shift- or Ctrl-click selects several clips. In/Out marks still work for removing an arbitrary range: with no clip selected, **Delete** removes the marked range.
+
+Ctrl+scroll over the timeline zooms around the pointer, and scrolling moves along it. **Export** in the header renders the edit to a video file.
+
 ## Keyboard shortcuts
 
 | Key | Action |
@@ -66,11 +74,17 @@ Preview video streams raw frames from FFmpeg at the source frame rate (capped at
 | Space or K | Play / pause |
 | ← / → | Back / forward 1 second |
 | Shift+← / Shift+→ | Back / forward 5 seconds |
+| , / . | Back / forward one frame |
+| ↑ / ↓ | Previous / next cut |
 | Home / End | Start / end of timeline |
+| S or Ctrl+K | Split at the playhead |
+| Q / W | Delete the clip's part before / after the playhead |
+| Delete or Backspace | Delete selected clips, or the In/Out range |
 | I / O | Mark In / Out |
-| Esc | Clear marks |
-| Delete or Backspace | Remove the marked range |
-| Ctrl+Z | Undo |
+| Esc | Clear selection and marks |
+| Ctrl+Z / Ctrl+Shift+Z (or Ctrl+Y) | Undo / redo |
+| = / - / Shift+Z | Zoom in / out / fit |
+| Ctrl+I / Ctrl+E | Import / export |
 
 Video files dropped onto the window are imported.
 

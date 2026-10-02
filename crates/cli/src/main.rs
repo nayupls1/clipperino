@@ -45,6 +45,10 @@ enum Command {
     Cut { start_ms: u64, end_ms: u64 },
     /// Restore the project state before the latest edit.
     Undo,
+    /// Reapply the most recently undone edit.
+    Redo,
+    /// Split the segment under a timeline position into two.
+    Split { at_ms: u64 },
     /// Extract a PNG frame from a source asset or the assembled timeline.
     Frame {
         #[arg(long)]
@@ -265,6 +269,14 @@ fn run() -> Result<()> {
         Command::Undo => {
             let revision = store.undo()?;
             print(&json!({"revision": revision, "duration_ms": store.load()?.duration_ms()}))?;
+        }
+        Command::Redo => {
+            let revision = store.redo()?;
+            print(&json!({"revision": revision, "duration_ms": store.load()?.duration_ms()}))?;
+        }
+        Command::Split { at_ms } => {
+            let id = store.update(|project| project.split_at(at_ms))?;
+            print(&json!({"new_segment_id": id}))?;
         }
         Command::Frame {
             asset,

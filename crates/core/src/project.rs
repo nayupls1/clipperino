@@ -251,8 +251,80 @@ impl Project {
             }
             cursor = segment_end;
         }
-        self.segments = coalesce(next);
+        self.segments = next;
         Ok(())
+    }
+
+    /// Returns the index and timeline start of the segment playing at `timeline_ms`.
+    pub fn segment_at(&self, timeline_ms: u64) -> Option<(usize, u64)> {
+        let mut start = 0;
+        for (index, segment) in self.segments.iter().enumerate() {
+            let end = start + segment.duration_ms();
+            if timeline_ms < end {
+                return Some((index, start));
+            }
+            start = end;
+        }
+        None
+    }
+
+    /// Timeline positions where one segment ends and the next begins.
+    pub fn cut_points(&self) -> Vec<u64> {
+        self.segments
+            .iter()
+            .scan(0, |position, segment| {
+                *position += segment.duration_ms();
+                Some(*position)
+            })
+            .collect()
+    }
+
+    /// Splits the segment under `timeline_ms` in two, returning the new right-hand segment id.
+    pub fn split_at(&mut self, timeline_ms: u64) -> Result<String> {
+        let (index, start) = self
+            .segment_at(timeline_ms)
+            .ok_or_else(|| error("the playhead is outside the timeline"))?;
+        let offset = timeline_ms - start;
+        let segment = &self.segments[index];
+        if offset == 0 {
+            return Err(error("there is already a cut here"));
+        }
+        let id = self.fresh_segment_id(&[], &mut 1);
+        let right = Segment {
+            id: id.clone(),
+            asset_id: segment.asset_id.clone(),
+            source_start_ms: segment.source_start_ms + offset,
+            source_end_ms: segment.source_end_ms,
+        };
+        self.segments[index].source_end_ms = right.source_start_ms;
+        self.segments.insert(index + 1, right);
+        Ok(id)
+    }
+
+    /// Removes whole segments and closes the gaps they leave.
+    pub fn remove_segments(&mut self, ids: &[String]) -> Result<()> {
+        let before = self.segments.len();
+        self.segments.retain(|segment| !ids.contains(&segment.id));
+        if self.segments.len() == before {
+            return Err(error("no matching segments to remove"));
+        }
+        Ok(())
+    }
+
+    /// Removes the part of the segment under `timeline_ms` before it (`left`) or from it on.
+    pub fn trim_at(&mut self, timeline_ms: u64, left: bool) -> Result<()> {
+        let (index, start) = self
+            .segment_at(timeline_ms)
+            .ok_or_else(|| error("the playhead is outside the timeline"))?;
+        let end = start + self.segments[index].duration_ms();
+        if left {
+            if timeline_ms == start {
+                return Err(error("nothing to remove before the playhead in this clip"));
+            }
+            self.remove_timeline_range(start, timeline_ms)
+        } else {
+            self.remove_timeline_range(timeline_ms, end)
+        }
     }
 
     pub fn replace_asset_with_kept_ranges(
@@ -360,6 +432,7 @@ impl ProjectStore {
         let result = operation(&mut project)?;
         project.validate()?;
         self.push_history(project.revision, &before)?;
+        self.write_redo_index(&[])?;
         project.revision += 1;
         write_atomic(&self.path, &serde_json::to_vec_pretty(&project)?)?;
         Ok(result)
@@ -377,9 +450,50 @@ impl ProjectStore {
             serde_json::from_slice(&fs::read(history_dir.join(format!("{revision}.json")))?)?;
         previous.revision = current.revision + 1;
         previous.validate()?;
+        let mut redo = self.redo_index()?;
+        write_atomic(
+            &history_dir.join(format!("redo-{}.json", current.revision)),
+            &serde_json::to_vec_pretty(&current)?,
+        )?;
+        redo.push(current.revision);
         write_atomic(&self.path, &serde_json::to_vec_pretty(&previous)?)?;
         write_atomic(&index_path, &serde_json::to_vec_pretty(&index)?)?;
+        self.write_redo_index(&redo)?;
         Ok(previous.revision)
+    }
+
+    /// Reapplies the most recently undone edit.
+    pub fn redo(&self) -> Result<u64> {
+        let _lock = self.lock()?;
+        let current = self.load()?;
+        let mut redo = self.redo_index()?;
+        let revision = redo.pop().ok_or_else(|| error("nothing to redo"))?;
+        let mut next: Project = serde_json::from_slice(&fs::read(
+            self.history_dir().join(format!("redo-{revision}.json")),
+        )?)?;
+        next.revision = current.revision + 1;
+        next.validate()?;
+        self.push_history(current.revision, &serde_json::to_vec_pretty(&current)?)?;
+        write_atomic(&self.path, &serde_json::to_vec_pretty(&next)?)?;
+        self.write_redo_index(&redo)?;
+        Ok(next.revision)
+    }
+
+    fn redo_index(&self) -> Result<Vec<u64>> {
+        match fs::read(self.history_dir().join("redo.json")) {
+            Ok(bytes) => Ok(serde_json::from_slice(&bytes)?),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(Vec::new()),
+            Err(error) => Err(error.into()),
+        }
+    }
+
+    fn write_redo_index(&self, index: &[u64]) -> Result<()> {
+        let directory = self.history_dir();
+        fs::create_dir_all(&directory)?;
+        write_atomic(
+            &directory.join("redo.json"),
+            &serde_json::to_vec_pretty(index)?,
+        )
     }
 
     fn lock(&self) -> Result<File> {
@@ -459,6 +573,37 @@ mod tests {
     }
 
     #[test]
+    fn split_then_remove_one_side() {
+        let mut project = sample();
+        let right = project.split_at(3_000).unwrap();
+        assert_eq!(project.segments.len(), 2);
+        assert!(project.split_at(3_000).is_err());
+        project.remove_segments(&[right]).unwrap();
+        assert_eq!(project.duration_ms(), 3_000);
+        project.validate().unwrap();
+    }
+
+    #[test]
+    fn splits_survive_later_removals() {
+        let mut project = sample();
+        project.split_at(5_000).unwrap();
+        project.remove_timeline_range(1_000, 2_000).unwrap();
+        assert_eq!(project.segments.len(), 3);
+        assert_eq!(project.cut_points(), vec![1_000, 4_000, 9_000]);
+    }
+
+    #[test]
+    fn trims_either_side_of_the_playhead() {
+        let mut project = sample();
+        project.split_at(4_000).unwrap();
+        project.trim_at(6_000, true).unwrap();
+        assert_eq!(project.cut_points(), vec![4_000, 8_000]);
+        assert_eq!(project.segments[1].source_start_ms, 6_000);
+        project.trim_at(5_000, false).unwrap();
+        assert_eq!(project.cut_points(), vec![4_000, 5_000]);
+    }
+
+    #[test]
     fn undo_restores_the_previous_timeline() {
         let directory = std::env::temp_dir().join(format!(
             "clipperino-core-test-{}-{}",
@@ -489,6 +634,14 @@ mod tests {
         assert_eq!(store.load().unwrap().duration_ms(), 8_000);
         store.undo().unwrap();
         assert_eq!(store.load().unwrap().duration_ms(), 10_000);
+        store.redo().unwrap();
+        assert_eq!(store.load().unwrap().duration_ms(), 8_000);
+        assert!(store.redo().is_err());
+        store.undo().unwrap();
+        store
+            .update(|project| project.remove_timeline_range(0, 1_000))
+            .unwrap();
+        assert!(store.redo().is_err(), "a new edit clears redo");
         fs::remove_dir_all(directory).unwrap();
     }
 }
