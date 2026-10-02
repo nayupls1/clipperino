@@ -1,0 +1,10 @@
+[package]
+name = "clipperino-core"
+edition.workspace = true
+license.workspace = true
+version.workspace = true
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+fs2 = "0.4"
